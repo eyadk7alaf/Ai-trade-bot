@@ -134,7 +134,7 @@ async def start_cmd(message: Message):
     )
     await message.answer(welcome_text)
 
-# ===== أمر الأدمن - فتح القائمة مباشرة =====
+# ===== أوامر الأدمن - قائمة ذكية =====
 @dp.message(Command("admin"))
 async def admin_cmd(message: Message):
     user_id = message.from_user.id
@@ -142,9 +142,13 @@ async def admin_cmd(message: Message):
         await message.answer("🚫 أنت لست الأدمن.")
         return
 
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add("🔑 إنشاء مفتاح جديد", "🗝️ عرض المفاتيح")
-    keyboard.add("📋 عرض المستخدمين", "🚫 حظر/فك حظر مستخدم")
+    keyboard = types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="🔑 إنشاء مفتاح جديد"), types.KeyboardButton(text="🗝️ عرض المفاتيح")],
+            [types.KeyboardButton(text="📋 عرض المستخدمين"), types.KeyboardButton(text="🚫 حظر/فك حظر مستخدم")]
+        ],
+        resize_keyboard=True
+    )
     await message.answer("👑 مرحباً أدمن! هذه قائمة الأوامر المتاحة:", reply_markup=keyboard)
 
 # ===== التعامل مع رسائل الأدمن =====
@@ -173,7 +177,6 @@ async def handle_admin_panel(message: Message):
         await message.reply("✍️ ابعت المفتاح الجديد وعدد الأيام مفصول بمسافة مثال:\n`MYKEY123 7`", parse_mode="Markdown")
 
     elif " " in text and text.split()[1].isdigit():
-        # إنشاء مفتاح فعلي
         parts = text.split()
         k, dur = parts[0], int(parts[1])
         create_key(k, dur)
@@ -188,7 +191,7 @@ async def handle_admin_panel(message: Message):
         for k in keys:
             used = k[3] if k[3] else "متاح"
             expiry = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(k[5])) if k[5] else "غير محدد"
-            msg += f"{k[1]} - {k[2]} يوم - مستخدم بواسطة: {used} - انتهاء: {expiry}\n"
+            msg += f"{k[1]} - {k[2]} يوم - مستخدم: {used} - انتهاء: {expiry}\n"
         await message.reply(msg)
 
     elif text == "📋 عرض المستخدمين":
@@ -208,11 +211,9 @@ async def handle_admin_panel(message: Message):
 
     elif text.isdigit():
         target_id = int(text)
-        # تحقق إذا محظور أو لا
         users = get_active_users()
         user_ids = [u[0] for u in users]
         if target_id in user_ids:
-            # إذا موجود وغير محظور
             ban_user(target_id)
             await message.reply(f"🚫 تم حظر المستخدم {target_id}")
         else:
