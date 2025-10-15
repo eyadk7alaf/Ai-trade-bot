@@ -1,7 +1,5 @@
-# database.py - إدارة قاعدة البيانات SQLite
 import sqlite3
 import time
-from datetime import datetime, timedelta
 
 DB_PATH = "bot_data.db"
 
@@ -10,7 +8,6 @@ def get_conn():
     conn.row_factory = sqlite3.Row
     return conn
 
-# إنشاء الجداول لو مش موجودة
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
@@ -36,7 +33,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Users
 def add_or_update_user(telegram_id, username=None):
     conn = get_conn()
     cur = conn.cursor()
@@ -61,8 +57,7 @@ def activate_user_with_key(telegram_id, key_code):
         conn.close()
         return False, 'used'
     now = int(time.time())
-    duration = k['duration_days']
-    expiry = now + duration*24*3600
+    expiry = now + k['duration_days']*24*3600
     cur.execute("UPDATE keys SET used_by=?, expiry=? WHERE key_code=?", (telegram_id, expiry, key_code))
     cur.execute("UPDATE users SET active=1, expiry=? WHERE telegram_id=?", (expiry, telegram_id))
     conn.commit()
@@ -77,9 +72,7 @@ def user_is_active(telegram_id):
     conn.close()
     if not row:
         return False
-    if row['active'] == 1 and row['expiry'] > int(time.time()):
-        return True
-    return False
+    return row['active']==1 and row['expiry']>int(time.time())
 
 def get_active_users():
     conn = get_conn()
@@ -89,7 +82,6 @@ def get_active_users():
     conn.close()
     return rows
 
-# Keys
 def create_key(key_code, duration_days):
     conn = get_conn()
     cur = conn.cursor()
@@ -105,11 +97,3 @@ def list_keys():
     rows = cur.fetchall()
     conn.close()
     return rows
-
-def cleanup_expired():
-    conn = get_conn()
-    cur = conn.cursor()
-    now = int(time.time())
-    cur.execute("UPDATE users SET active=0 WHERE expiry<=?", (now,))
-    conn.commit()
-    conn.close()
