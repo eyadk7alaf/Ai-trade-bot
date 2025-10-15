@@ -179,7 +179,7 @@ async def handle_text(msg: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # حظر مستخدم
+        # الحظر
         if current_state == AdminStates.waiting_ban_user:
             try:
                 ban_user(int(text))
@@ -189,7 +189,7 @@ async def handle_text(msg: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # إلغاء حظر مستخدم
+        # إلغاء الحظر
         if current_state == AdminStates.waiting_unban_user:
             try:
                 unban_user(int(text))
@@ -229,8 +229,6 @@ async def handle_text(msg: types.Message, state: FSMContext):
 
         # إرسال صفقة يدوياً
         if current_state == AdminStates.waiting_trade_manual:
-            # هنا يمكن معالجة الصفقة وإرسالها للمستخدمين
-            # مثال: مجرد رسالة تجريبية
             users = get_active_users()
             for u in users:
                 try:
@@ -241,7 +239,7 @@ async def handle_text(msg: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # الضغط على الزرار
+        # التعامل مع ضغط الأزرار
         if text == "إنشاء مفتاح 🔑":
             await msg.reply("🪄 أرسل الكود وعدد الأيام مفصول بمسافة:\nمثال: MYKEY 7")
             await state.set_state(AdminStates.waiting_key_creation)
@@ -279,19 +277,3 @@ async def handle_text(msg: types.Message, state: FSMContext):
     if len(text) > 3 and " " not in text:
         ok, info = activate_user_with_key(user_id, text)
         if ok:
-            await msg.reply(f"✅ تم تفعيل اشتراكك حتى: {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(info))}")
-        else:
-            if info == "invalid":
-                await msg.reply("❌ المفتاح غير صحيح.")
-            elif info == "used":
-                await msg.reply("⚠️ المفتاح مستخدم بالفعل.")
-            else:
-                await msg.reply("حدث خطأ أثناء التفعيل.")
-        return
-
-    await msg.reply("❓ أمر غير معروف أو لم يُنفذ بعد.")
-
-# ================= تشغيل البوت =================
-async def main():
-    init_db()
-    print("✅ قاعدة البيانات
