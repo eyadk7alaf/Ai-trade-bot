@@ -6,15 +6,15 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 import os
 
-# =============== الإعدادات ===============
+# =================== الإعدادات ===================
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = 7378889303
 DB_PATH = "bot_data.db"
 
-# =============== إعداد اللوج ===============
+# =================== إعداد اللوج ===================
 logging.basicConfig(level=logging.INFO)
 
-# =============== قاعدة البيانات ===============
+# =================== قاعدة البيانات ===================
 def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -100,7 +100,7 @@ def get_active_users():
     conn.close()
     return rows
 
-# =============== إعداد البوت ===============
+# =================== إعداد البوت ===================
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher()
 
@@ -110,12 +110,12 @@ def format_expiry(ts):
         return 'غير محدد'
     return datetime.datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S UTC')
 
-# =============== الأوامر ===============
+# =================== الأوامر ===================
 @dp.message(Command("start"))
 async def start(msg: types.Message):
     add_or_update_user(msg.from_user.id, getattr(msg.from_user, 'username', None))
     await msg.answer("👋 أهلاً بك في بوت <b>Black Web 💲</b>\n"
-                     "للاشتراك أرسل مفتاح التفعيل الخاص بك 🔑")
+                     "للاشتراك أرسل مفتاح التفعيل 🔑")
 
 @dp.message(Command("admin"))
 async def admin_menu(msg: types.Message):
@@ -164,7 +164,7 @@ async def handle_text(msg: types.Message):
 
     await msg.reply("❓ أمر غير معروف.")
 
-# =============== تشغيل البوت ===============
+# =================== تشغيل البوت ===================
 async def main():
     init_db()  # أول حاجة ننشئ قاعدة البيانات والجداول
     print("✅ قاعدة البيانات جاهزة")
