@@ -6,15 +6,16 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 import os
 
-# =================== الإعدادات ===================
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = 7378889303
+# ================= إعداد البوت =================
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")  # لازم تعمل المتغير في Railway
+ADMIN_ID = 7378889303  # رقم الأدمن
 DB_PATH = "bot_data.db"
 
-# =================== إعداد اللوج ===================
 logging.basicConfig(level=logging.INFO)
+bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+dp = Dispatcher()
 
-# =================== قاعدة البيانات ===================
+# ================= قاعدة البيانات =================
 def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -115,23 +116,20 @@ def unban_user(telegram_id):
     conn.commit()
     conn.close()
 
-# =================== إعداد البوت ===================
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
-dp = Dispatcher()
-
+# ================= الأدمن / أوامر المستخدم =================
 def format_expiry(ts):
     import datetime
     if not ts:
         return 'غير محدد'
     return datetime.datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S UTC')
 
-# =================== أوامر البوت ===================
 @dp.message(Command("start"))
 async def start(msg: types.Message):
     add_or_update_user(msg.from_user.id, getattr(msg.from_user, 'username', None))
     await msg.answer(
-        "👋 أهلاً بك في بوت <b>Black Web 💲</b>\n"
-        "للاشتراك أرسل مفتاح التفعيل 🔑"
+        f"👋 أهلاً {msg.from_user.first_name}!\n"
+        "هذا بوت تجريبي لإرسال الصفقات وإدارة الاشتراكات.\n"
+        "للاشتراك، أرسل مفتاح التفعيل 🔑"
     )
 
 @dp.message(Command("admin"))
@@ -139,33 +137,31 @@ async def admin_menu(msg: types.Message):
     if msg.from_user.id != ADMIN_ID:
         await msg.reply("❌ غير مسموح بالدخول هنا.")
         return
-
-    # نسخة جديدة لإنشاء لوحة الأزرار بطريقة aiogram v3.5+
     keyboard = types.ReplyKeyboardMarkup(
         keyboard=[
             [types.KeyboardButton(text="إنشاء مفتاح 🔑"), types.KeyboardButton(text="عرض المفاتيح 📜")],
             [types.KeyboardButton(text="رسالة لكل المستخدمين 📢"), types.KeyboardButton(text="رسالة للمشتركين ✅")],
-            [types.KeyboardButton(text="حظر مستخدم ❌"), types.KeyboardButton(text="إلغاء حظر مستخدم ✅")]
+            [types.KeyboardButton(text="حظر مستخدم ❌"), types.KeyboardButton(text="إلغاء حظر مستخدم ✅")],
+            [types.KeyboardButton(text="إرسال صفقة يدوياً 💹")]
         ],
         resize_keyboard=True,
         one_time_keyboard=True
     )
     await msg.reply("📋 قائمة أوامر الأدمن:", reply_markup=keyboard)
 
-# =================== التعامل مع نصوص المستخدم ===================
 @dp.message()
 async def handle_text(msg: types.Message):
     text = msg.text.strip()
 
-    # =================== أوامر الأدمن ===================
+    # ================ أوامر الأدمن =================
     if msg.from_user.id == ADMIN_ID:
-        if text.startswith("/createkey") or text.startswith("إنشاء مفتاح 🔑"):
-            await msg.reply("🪄 استخدم الأمر بالشكل التالي:\n/createkey `كود_المفتاح` `المدة_بالأيام`")
+        if text.startswith("إنشاء مفتاح 🔑"):
+            await msg.reply("🪄 أرسل الكود وعدد الأيام مفصول بمسافة:\nمثال: MYKEY 7")
             return
-        elif text.startswith("/listkeys") or text.startswith("عرض المفاتيح 📜"):
+        elif text.startswith("عرض المفاتيح 📜"):
             rows = list_keys()
             if not rows:
-                await msg.reply("❌ لا توجد مفاتيح بعد.")
+                await msg.reply("❌ لا توجد مفاتيح.")
                 return
             reply = "📜 <b>قائمة المفاتيح:</b>\n"
             for r in rows:
@@ -173,21 +169,24 @@ async def handle_text(msg: types.Message):
                 reply += f"🔑 <code>{r['key_code']}</code> - {r['duration_days']} يوم - {used}\n"
             await msg.reply(reply)
             return
-        elif text.startswith("حظر مستخدم ❌") or text.startswith("/ban"):
+        elif text.startswith("حظر مستخدم ❌"):
             await msg.reply("🛑 أرسل أيدي المستخدم لحظره:")
             return
-        elif text.startswith("إلغاء حظر مستخدم ✅") or text.startswith("/unban"):
+        elif text.startswith("إلغاء حظر مستخدم ✅"):
             await msg.reply("✅ أرسل أيدي المستخدم لإلغاء الحظر:")
             return
-        elif text.startswith("رسالة لكل المستخدمين 📢") or text.startswith("/msgall"):
+        elif text.startswith("رسالة لكل المستخدمين 📢"):
             await msg.reply("📢 أرسل الرسالة لتصل لكل المستخدمين:")
             return
-        elif text.startswith("رسالة للمشتركين ✅") or text.startswith("/msgsub"):
-            await msg.reply("✅ أرسل الرسالة لتصل لكل المشتركين:")
+        elif text.startswith("رسالة للمشتركين ✅"):
+            await msg.reply("✅ أرسل الرسالة لتصل للمشتركين فقط:")
+            return
+        elif text.startswith("إرسال صفقة يدوياً 💹"):
+            await msg.reply("💹 أرسل الصفقة بهذا الشكل:\nزوج العملة، نوع الصفقة (Buy/Sell)، السعر، SL، TP، نسبة النجاح\nمثال:\nXAUUSD Buy 2670 2665 2680 90%")
             return
 
-    # =================== تفعيل الاشتراك ===================
-    if len(text) > 3:
+    # ================ تفعيل مفتاح =================
+    if len(text) > 3 and " " not in text:  # نصوص قصيرة بدون مسافات
         ok, info = activate_user_with_key(msg.from_user.id, text)
         if ok:
             await msg.reply(f"✅ تم تفعيل اشتراكك حتى: {format_expiry(info)}")
@@ -200,9 +199,9 @@ async def handle_text(msg: types.Message):
                 await msg.reply("حدث خطأ أثناء التفعيل.")
         return
 
-    await msg.reply("❓ أمر غير معروف.")
-
-# =================== تشغيل البوت ===================
+    await msg.reply("❓ أمر غير معروف أو لم يُنفذ بعد.")
+    
+# ================= تشغيل البوت =================
 async def main():
     init_db()
     print("✅ قاعدة البيانات جاهزة")
