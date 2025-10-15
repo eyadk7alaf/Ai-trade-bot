@@ -4,6 +4,8 @@ import time
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 import os
 
 # ================= إعداد البوت =================
@@ -14,6 +16,15 @@ DB_PATH = "bot_data.db"
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher()
+
+# ================= FSM للأدمن =================
+class AdminStates(StatesGroup):
+    waiting_key_creation = State()
+    waiting_ban_user = State()
+    waiting_unban_user = State()
+    waiting_broadcast_all = State()
+    waiting_broadcast_subs = State()
+    waiting_trade_manual = State()
 
 # ================= قاعدة البيانات =================
 def get_conn():
@@ -116,7 +127,7 @@ def unban_user(telegram_id):
     conn.commit()
     conn.close()
 
-# ================= الأدمن / أزرار =================
+# ================= قائمة الأدمن =================
 ADMIN_BUTTONS = [
     ["إنشاء مفتاح 🔑", "عرض المفاتيح 📜"],
     ["حظر مستخدم ❌", "إلغاء حظر مستخدم ✅"],
@@ -124,6 +135,7 @@ ADMIN_BUTTONS = [
     ["إرسال صفقة يدوياً 💹"]
 ]
 
+# ================= الرسائل الأساسية =================
 @dp.message(Command("start"))
 async def start(msg: types.Message):
     add_or_update_user(msg.from_user.id, getattr(msg.from_user, 'username', None))
@@ -147,14 +159,92 @@ async def admin(msg: types.Message):
 
 # ================= التعامل مع النصوص =================
 @dp.message()
-async def handle_text(msg: types.Message):
+async def handle_text(msg: types.Message, state: FSMContext):
     text = msg.text.strip()
     user_id = msg.from_user.id
 
     # ======= أوامر الأدمن =======
     if user_id == ADMIN_ID:
+        current_state = await state.get_state()
+        
+        # إنشاء مفتاح
+        if current_state == AdminStates.waiting_key_creation:
+            try:
+                key, days = text.split()
+                days = int(days)
+                create_key(key, days)
+                await msg.reply(f"✅ تم إنشاء المفتاح {key} لمدة {days} يوم.")
+            except:
+                await msg.reply("❌ خطأ، تأكد من الصيغة: الكود ثم عدد الأيام.")
+            await state.clear()
+            return
+
+        # حظر مستخدم
+        if current_state == AdminStates.waiting_ban_user:
+            try:
+                ban_user(int(text))
+                await msg.reply(f"❌ تم حظر المستخدم {text}")
+            except:
+                await msg.reply("❌ خطأ، تأكد من الأيدي.")
+            await state.clear()
+            return
+
+        # إلغاء حظر مستخدم
+        if current_state == AdminStates.waiting_unban_user:
+            try:
+                unban_user(int(text))
+                await msg.reply(f"✅ تم إلغاء الحظر عن المستخدم {text}")
+            except:
+                await msg.reply("❌ خطأ، تأكد من الأيدي.")
+            await state.clear()
+            return
+
+        # رسالة لكل المستخدمين
+        if current_state == AdminStates.waiting_broadcast_all:
+            users = get_active_users()
+            count = 0
+            for u in users:
+                try:
+                    await bot.send_message(u['telegram_id'], text)
+                    count += 1
+                except:
+                    continue
+            await msg.reply(f"📢 تم إرسال الرسالة لـ {count} مستخدمين.")
+            await state.clear()
+            return
+
+        # رسالة للمشتركين فقط
+        if current_state == AdminStates.waiting_broadcast_subs:
+            subs = get_active_users()
+            count = 0
+            for u in subs:
+                try:
+                    await bot.send_message(u['telegram_id'], text)
+                    count += 1
+                except:
+                    continue
+            await msg.reply(f"✅ تم إرسال الرسالة لـ {count} مشترك.")
+            await state.clear()
+            return
+
+        # إرسال صفقة يدوياً
+        if current_state == AdminStates.waiting_trade_manual:
+            # هنا يمكن معالجة الصفقة وإرسالها للمستخدمين
+            # مثال: مجرد رسالة تجريبية
+            users = get_active_users()
+            for u in users:
+                try:
+                    await bot.send_message(u['telegram_id'], f"💹 صفقة جديدة:\n{text}")
+                except:
+                    continue
+            await msg.reply("💹 تم إرسال الصفقة للمشتركين.")
+            await state.clear()
+            return
+
+        # الضغط على الزرار
         if text == "إنشاء مفتاح 🔑":
             await msg.reply("🪄 أرسل الكود وعدد الأيام مفصول بمسافة:\nمثال: MYKEY 7")
+            await state.set_state(AdminStates.waiting_key_creation)
             return
         elif text == "عرض المفاتيح 📜":
             rows = list_keys()
@@ -166,22 +256,27 @@ async def handle_text(msg: types.Message):
             return
         elif text == "حظر مستخدم ❌":
             await msg.reply("🛑 أرسل أيدي المستخدم لحظره:")
+            await state.set_state(AdminStates.waiting_ban_user)
             return
         elif text == "إلغاء حظر مستخدم ✅":
             await msg.reply("✅ أرسل أيدي المستخدم لإلغاء الحظر:")
+            await state.set_state(AdminStates.waiting_unban_user)
             return
         elif text == "رسالة لكل المستخدمين 📢":
             await msg.reply("📢 أرسل الرسالة لتصل لكل المستخدمين:")
+            await state.set_state(AdminStates.waiting_broadcast_all)
             return
         elif text == "رسالة للمشتركين ✅":
             await msg.reply("✅ أرسل الرسالة لتصل للمشتركين فقط:")
+            await state.set_state(AdminStates.waiting_broadcast_subs)
             return
         elif text == "إرسال صفقة يدوياً 💹":
-            await msg.reply("💹 أرسل الصفقة بهذا الشكل:\nزوج العملة، نوع الصفقة (Buy/Sell)، السعر، SL، TP، نسبة النجاح\nمثال:\nXAUUSD Buy 2670 2665 2680 90%")
+            await msg.reply("💹 أرسل الصفقة بهذا الشكل:\nزوج العملة، نوع الصفقة، السعر، SL، TP، نسبة النجاح")
+            await state.set_state(AdminStates.waiting_trade_manual)
             return
 
-    # ======= تفعيل مفتاح الاشتراك =======
-    if len(text) > 3 and " " not in text:  # نصوص قصيرة بدون مسافات
+    # ======= تفعيل مفتاح الاشتراك للمستخدمين =======
+    if len(text) > 3 and " " not in text:
         ok, info = activate_user_with_key(user_id, text)
         if ok:
             await msg.reply(f"✅ تم تفعيل اشتراكك حتى: {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(info))}")
@@ -199,8 +294,4 @@ async def handle_text(msg: types.Message):
 # ================= تشغيل البوت =================
 async def main():
     init_db()
-    print("✅ قاعدة البيانات جاهزة")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    print("✅ قاعدة البيانات
