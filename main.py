@@ -8,6 +8,8 @@ from database import init_db, add_or_update_user, activate_user_with_key, create
 from config import BOT_TOKEN, ADMIN_ID
 from scheduler import start_scheduler
 import time
+from aiogram.utils.text_decorators import html_decoration
+from aiogram.utils.markdown import escape_html
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
@@ -30,7 +32,7 @@ async def cmd_start(msg: Message):
     add_or_update_user(msg.from_user.id, getattr(msg.from_user, 'username', None))
     await msg.reply("""🎉 أهلاً بك في بوت التوصيات!
 🔑 للاشتراك: أرسل مفتاح التفعيل الخاص بك.
-ℹ️ للأوامر الإدارية استخدم /admin (مخصص للأدمن فقط).""")
+ℹ️ لأوامر الإدارة استخدم /admin (مخصص للأدمن فقط).""")
 
 # -------------------- أوامر الأدمن --------------------
 @dp.message(Command('admin'))
@@ -55,8 +57,9 @@ async def handle_text(msg: Message):
         if len(parts) == 3:
             k = parts[1].strip()
             dur = int(parts[2])
+            safe_k = escape_html(k)
             create_key(k, dur)
-            await msg.reply(f'✅ تم إنشاء المفتاح <b>{k}</b> لمدة {dur} يوم.')
+            await msg.reply(f'✅ تم إنشاء المفتاح <b>{safe_k}</b> لمدة {dur} يوم.')
         else:
             await msg.reply('⚠️ استخدام صحيح: /createkey <KEYCODE> <DAYS>')
         return
@@ -66,7 +69,8 @@ async def handle_text(msg: Message):
         txt = '🗝️ قائمة المفاتيح:\n'
         for r in rows:
             used = r['used_by'] if r['used_by'] else 'متاح'
-            txt += f"{r['key_code']} - {r['duration_days']}d - مستخدم بواسطة: {used}\n"
+            safe_code = escape_html(r['key_code'])
+            txt += f"{safe_code} - {r['duration_days']}d - مستخدم بواسطة: {used}\n"
         await msg.reply(txt)
         return
 
@@ -74,7 +78,8 @@ async def handle_text(msg: Message):
         rows = get_active_users()
         txt = '👥 المشتركين النشطين:\n'
         for r in rows:
-            txt += f"{r['telegram_id']} - {r['username']} - انتهاء الاشتراك: {format_expiry(r['expiry'])}\n"
+            username = escape_html(r['username'] if r['username'] else 'غير محدد')
+            txt += f"{r['telegram_id']} - {username} - انتهاء الاشتراك: {format_expiry(r['expiry'])}\n"
         await msg.reply(txt)
         return
 
