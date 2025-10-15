@@ -13,40 +13,38 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
 dp = Dispatcher()
 
-# ----------- التأكد من إنشاء الجداول قبل أي استخدام ----------
+# --------------------- التأكد من إنشاء الجداول ---------------------
 init_db()
-# ----------------------------------------------------------------
+# -------------------------------------------------------------------
 
 def format_expiry(ts):
-    if not ts: return 'غير محدد'
+    if not ts: 
+        return 'غير محدد'
     import datetime
     dt = datetime.datetime.utcfromtimestamp(ts)
     return dt.strftime('%Y-%m-%d %H:%M:%S UTC')
 
-# رسالة الترحيب للمستخدمين بشكل عام
+# -------------------- رسالة الترحيب --------------------
 @dp.message(Command('start'))
 async def cmd_start(msg: Message):
     add_or_update_user(msg.from_user.id, getattr(msg.from_user, 'username', None))
-    await msg.reply(
-        "🎉 أهلاً بك في بوت التوصيات!\n"
-        "🔑 للاشتراك: أرسل مفتاح التفعيل الخاص بك.\n"
-        "ℹ️ لأوامر الإدارة استخدم الأمر /admin (مخصص للأدمن فقط)."
-    )
+    await msg.reply("""🎉 أهلاً بك في بوت التوصيات!
+🔑 للاشتراك: أرسل مفتاح التفعيل الخاص بك.
+ℹ️ للأوامر الإدارية استخدم /admin (مخصص للأدمن فقط).""")
 
-# أوامر الأدمن
+# -------------------- أوامر الأدمن --------------------
 @dp.message(Command('admin'))
 async def cmd_admin(msg: Message):
     if msg.from_user.id != ADMIN_ID:
         await msg.reply("❌ أنت لست الأدمن.")
         return
-    await msg.reply(
-        "🛠️ قائمة أوامر الأدمن:\n\n"
-        "🔹 /createkey <KEYCODE> <DAYS> - إنشاء مفتاح تفعيل جديد\n"
-        "🔹 /listkeys - عرض جميع المفاتيح\n"
-        "🔹 /users - عرض المشتركين النشطين"
-    )
+    await msg.reply("""🛠️ قائمة أوامر الأدمن:
 
-# التعامل مع باقي الرسائل
+🔹 /createkey <KEYCODE> <DAYS> - إنشاء مفتاح تفعيل جديد
+🔹 /listkeys - عرض جميع المفاتيح
+🔹 /users - عرض المشتركين النشطين""")
+
+# -------------------- التعامل مع باقي الرسائل --------------------
 @dp.message()
 async def handle_text(msg: Message):
     text = (msg.text or '').strip()
@@ -96,7 +94,7 @@ async def handle_text(msg: Message):
 
     await msg.reply('❓ أمر غير معروف.')
 
-# إرسال الإشارات
+# -------------------- إرسال الإشارات --------------------
 async def send_signal_to_user(user_id, signal):
     text = (f"📈 <b>صفقة جديدة على XAUUSD</b>\n"
             f"🔹 نوع الصفقة: {signal['type']} ({signal['mode']})\n"
@@ -110,10 +108,9 @@ async def send_signal_to_user(user_id, signal):
     except Exception as e:
         print('send signal error', e)
 
-# بدء التشغيل
+# -------------------- بدء التشغيل --------------------
 async def on_startup():
-    # التأكد مرة أخرى من وجود الجداول
-    init_db()
+    init_db()  # التأكد مرة أخرى من وجود الجداول
     
     from database import list_keys
     if len(list_keys())==0:
@@ -122,79 +119,6 @@ async def on_startup():
         create_key('XAU-30D-DEMO', 30)
     
     # بدء الـ scheduler في الخلفية
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, start_scheduler, send_signal_to_user)
-    print('Bot started')
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(dp.start_polling(bot, on_startup=on_startup))
-    except (KeyboardInterrupt, SystemExit):
-        print('Bot stopped')async def handle_text(msg: Message):
-    text = (msg.text or '').strip()
-    if msg.from_user.id == ADMIN_ID and text.startswith('/createkey'):
-        parts = text.split()
-        if len(parts) == 3:
-            k = parts[1].strip()
-            dur = int(parts[2])
-            create_key(k, dur)
-            await msg.reply(f'تم إنشاء المفتاح {k} لمدة {dur} يوم.')
-        else:
-            await msg.reply('استخدام: /createkey <KEYCODE> <DAYS>')
-        return
-    if msg.from_user.id == ADMIN_ID and text.startswith('/listkeys'):
-        rows = list_keys()
-        txt = 'قائمة المفاتيح:\n'
-        for r in rows:
-            used = r['used_by'] if r['used_by'] else 'متاح'
-            txt += f"{r['key_code']} - {r['duration_days']}d - used_by: {used}\n"
-        await msg.reply(txt)
-        return
-    if msg.from_user.id == ADMIN_ID and text.startswith('/users'):
-        rows = get_active_users()
-        txt = 'المشتركين النشطين:\n'
-        for r in rows:
-            txt += f"{r['telegram_id']} - {r['username']} - expiry: {format_expiry(r['expiry'])}\n"
-        await msg.reply(txt)
-        return
-    if len(text) > 3 and ('-' in text or text.isalnum()):
-        ok, info = activate_user_with_key(msg.from_user.id, text)
-        if ok:
-            await msg.reply(f'تم تفعيل اشتراكك حتى: {format_expiry(info)}')
-        else:
-            if info == 'invalid':
-                await msg.reply('المفتاح غير صحيح، تأكد وحاول مرة أخرى.')
-            elif info == 'used':
-                await msg.reply('المفتاح مستخدم بالفعل.')
-            else:
-                await msg.reply('حدث خطأ أثناء التفعيل.')
-        return
-    await msg.reply('أمر غير معروف. لأوامر الادمن: /admin (لو أنت الأدمن)')
-
-async def send_signal_to_user(user_id, signal):
-    text = (f"📈 <b>صفقة جديدة على XAUUSD</b>\n"
-            f"🔹 نوع الصفقة: {signal['type']} ({signal['mode']})\n"
-            f"💰 الدخول: {signal['entry']}\n"
-            f"🛑 Stop Loss: {signal['sl']}\n"
-            f"🎯 Take Profit: {signal['tp']}\n"
-            f"✅ نسبة النجاح المتوقعة: {signal['rate']}%\n"
-            f"⏰ وقت الإشارة: {signal['time']}")
-    try:
-        await bot.send_message(user_id, text)
-    except Exception as e:
-        print('send signal error', e)
-
-async def on_startup():
-    # التأكد مرة أخرى من وجود الجداول
-    init_db()
-    
-    from database import list_keys
-    if len(list_keys())==0:
-        create_key('XAU-1D-DEMO', 1)
-        create_key('XAU-7D-DEMO', 7)
-        create_key('XAU-30D-DEMO', 30)
-    
-    # start scheduler in background
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, start_scheduler, send_signal_to_user)
     print('Bot started')
