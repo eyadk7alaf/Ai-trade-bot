@@ -129,8 +129,10 @@ def format_expiry(ts):
 @dp.message(Command("start"))
 async def start(msg: types.Message):
     add_or_update_user(msg.from_user.id, getattr(msg.from_user, 'username', None))
-    await msg.answer("👋 أهلاً بك في بوت <b>Black Web 💲</b>\n"
-                     "للاشتراك أرسل مفتاح التفعيل 🔑")
+    await msg.answer(
+        "👋 أهلاً بك في بوت <b>Black Web 💲</b>\n"
+        "للاشتراك أرسل مفتاح التفعيل 🔑"
+    )
 
 @dp.message(Command("admin"))
 async def admin_menu(msg: types.Message):
@@ -138,18 +140,15 @@ async def admin_menu(msg: types.Message):
         await msg.reply("❌ غير مسموح بالدخول هنا.")
         return
 
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    keyboard.add(
-        types.KeyboardButton("إنشاء مفتاح 🔑"),
-        types.KeyboardButton("عرض المفاتيح 📜")
-    )
-    keyboard.add(
-        types.KeyboardButton("رسالة لكل المستخدمين 📢"),
-        types.KeyboardButton("رسالة للمشتركين ✅")
-    )
-    keyboard.add(
-        types.KeyboardButton("حظر مستخدم ❌"),
-        types.KeyboardButton("إلغاء حظر مستخدم ✅")
+    # نسخة جديدة لإنشاء لوحة الأزرار بطريقة aiogram v3.5+
+    keyboard = types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="إنشاء مفتاح 🔑"), types.KeyboardButton(text="عرض المفاتيح 📜")],
+            [types.KeyboardButton(text="رسالة لكل المستخدمين 📢"), types.KeyboardButton(text="رسالة للمشتركين ✅")],
+            [types.KeyboardButton(text="حظر مستخدم ❌"), types.KeyboardButton(text="إلغاء حظر مستخدم ✅")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
     )
     await msg.reply("📋 قائمة أوامر الأدمن:", reply_markup=keyboard)
 
