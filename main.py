@@ -7,8 +7,8 @@ from aiogram.filters import Command
 import os
 
 # ================= إعداد البوت =================
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")  # لازم تعمل المتغير في Railway
-ADMIN_ID = 7378889303  # رقم الأدمن
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+ADMIN_ID = 7378889303
 DB_PATH = "bot_data.db"
 
 logging.basicConfig(level=logging.INFO)
@@ -116,12 +116,13 @@ def unban_user(telegram_id):
     conn.commit()
     conn.close()
 
-# ================= الأدمن / أوامر المستخدم =================
-def format_expiry(ts):
-    import datetime
-    if not ts:
-        return 'غير محدد'
-    return datetime.datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S UTC')
+# ================= الأدمن / أزرار =================
+ADMIN_BUTTONS = [
+    ["إنشاء مفتاح 🔑", "عرض المفاتيح 📜"],
+    ["حظر مستخدم ❌", "إلغاء حظر مستخدم ✅"],
+    ["رسالة لكل المستخدمين 📢", "رسالة للمشتركين ✅"],
+    ["إرسال صفقة يدوياً 💹"]
+]
 
 @dp.message(Command("start"))
 async def start(msg: types.Message):
@@ -133,63 +134,57 @@ async def start(msg: types.Message):
     )
 
 @dp.message(Command("admin"))
-async def admin_menu(msg: types.Message):
+async def admin(msg: types.Message):
     if msg.from_user.id != ADMIN_ID:
         await msg.reply("❌ غير مسموح بالدخول هنا.")
         return
     keyboard = types.ReplyKeyboardMarkup(
-        keyboard=[
-            [types.KeyboardButton(text="إنشاء مفتاح 🔑"), types.KeyboardButton(text="عرض المفاتيح 📜")],
-            [types.KeyboardButton(text="رسالة لكل المستخدمين 📢"), types.KeyboardButton(text="رسالة للمشتركين ✅")],
-            [types.KeyboardButton(text="حظر مستخدم ❌"), types.KeyboardButton(text="إلغاء حظر مستخدم ✅")],
-            [types.KeyboardButton(text="إرسال صفقة يدوياً 💹")]
-        ],
+        keyboard=[[types.KeyboardButton(text=b) for b in row] for row in ADMIN_BUTTONS],
         resize_keyboard=True,
         one_time_keyboard=True
     )
     await msg.reply("📋 قائمة أوامر الأدمن:", reply_markup=keyboard)
 
+# ================= التعامل مع النصوص =================
 @dp.message()
 async def handle_text(msg: types.Message):
     text = msg.text.strip()
+    user_id = msg.from_user.id
 
-    # ================ أوامر الأدمن =================
-    if msg.from_user.id == ADMIN_ID:
-        if text.startswith("إنشاء مفتاح 🔑"):
+    # ======= أوامر الأدمن =======
+    if user_id == ADMIN_ID:
+        if text == "إنشاء مفتاح 🔑":
             await msg.reply("🪄 أرسل الكود وعدد الأيام مفصول بمسافة:\nمثال: MYKEY 7")
             return
-        elif text.startswith("عرض المفاتيح 📜"):
+        elif text == "عرض المفاتيح 📜":
             rows = list_keys()
-            if not rows:
-                await msg.reply("❌ لا توجد مفاتيح.")
-                return
             reply = "📜 <b>قائمة المفاتيح:</b>\n"
             for r in rows:
                 used = "✅ مستخدم" if r['used_by'] else "🟢 متاح"
                 reply += f"🔑 <code>{r['key_code']}</code> - {r['duration_days']} يوم - {used}\n"
             await msg.reply(reply)
             return
-        elif text.startswith("حظر مستخدم ❌"):
+        elif text == "حظر مستخدم ❌":
             await msg.reply("🛑 أرسل أيدي المستخدم لحظره:")
             return
-        elif text.startswith("إلغاء حظر مستخدم ✅"):
+        elif text == "إلغاء حظر مستخدم ✅":
             await msg.reply("✅ أرسل أيدي المستخدم لإلغاء الحظر:")
             return
-        elif text.startswith("رسالة لكل المستخدمين 📢"):
+        elif text == "رسالة لكل المستخدمين 📢":
             await msg.reply("📢 أرسل الرسالة لتصل لكل المستخدمين:")
             return
-        elif text.startswith("رسالة للمشتركين ✅"):
+        elif text == "رسالة للمشتركين ✅":
             await msg.reply("✅ أرسل الرسالة لتصل للمشتركين فقط:")
             return
-        elif text.startswith("إرسال صفقة يدوياً 💹"):
+        elif text == "إرسال صفقة يدوياً 💹":
             await msg.reply("💹 أرسل الصفقة بهذا الشكل:\nزوج العملة، نوع الصفقة (Buy/Sell)، السعر، SL، TP، نسبة النجاح\nمثال:\nXAUUSD Buy 2670 2665 2680 90%")
             return
 
-    # ================ تفعيل مفتاح =================
+    # ======= تفعيل مفتاح الاشتراك =======
     if len(text) > 3 and " " not in text:  # نصوص قصيرة بدون مسافات
-        ok, info = activate_user_with_key(msg.from_user.id, text)
+        ok, info = activate_user_with_key(user_id, text)
         if ok:
-            await msg.reply(f"✅ تم تفعيل اشتراكك حتى: {format_expiry(info)}")
+            await msg.reply(f"✅ تم تفعيل اشتراكك حتى: {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(info))}")
         else:
             if info == "invalid":
                 await msg.reply("❌ المفتاح غير صحيح.")
@@ -200,7 +195,7 @@ async def handle_text(msg: types.Message):
         return
 
     await msg.reply("❓ أمر غير معروف أو لم يُنفذ بعد.")
-    
+
 # ================= تشغيل البوت =================
 async def main():
     init_db()
