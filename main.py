@@ -7,9 +7,8 @@ import logging
 from database import init_db, add_or_update_user, activate_user_with_key, create_key, list_keys, get_active_users
 from config import BOT_TOKEN, ADMIN_ID
 from scheduler import start_scheduler
-import time
-from aiogram.utils.text_decorators import html_decoration
 from aiogram.utils.markdown import escape_html
+import time
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
