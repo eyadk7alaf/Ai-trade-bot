@@ -1,3 +1,4 @@
+# main.py
 import asyncio
 import sqlite3
 import time
@@ -167,7 +168,6 @@ async def handle_text(msg: types.Message, state: FSMContext):
     if user_id == ADMIN_ID:
         current_state = await state.get_state()
         
-        # إنشاء مفتاح
         if current_state == AdminStates.waiting_key_creation:
             try:
                 key, days = text.split()
@@ -179,7 +179,6 @@ async def handle_text(msg: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # الحظر
         if current_state == AdminStates.waiting_ban_user:
             try:
                 ban_user(int(text))
@@ -189,7 +188,6 @@ async def handle_text(msg: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # إلغاء الحظر
         if current_state == AdminStates.waiting_unban_user:
             try:
                 unban_user(int(text))
@@ -199,7 +197,6 @@ async def handle_text(msg: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # رسالة لكل المستخدمين
         if current_state == AdminStates.waiting_broadcast_all:
             users = get_active_users()
             count = 0
@@ -213,7 +210,6 @@ async def handle_text(msg: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # رسالة للمشتركين فقط
         if current_state == AdminStates.waiting_broadcast_subs:
             subs = get_active_users()
             count = 0
@@ -227,7 +223,6 @@ async def handle_text(msg: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # إرسال صفقة يدوياً
         if current_state == AdminStates.waiting_trade_manual:
             users = get_active_users()
             for u in users:
@@ -277,3 +272,26 @@ async def handle_text(msg: types.Message, state: FSMContext):
     if len(text) > 3 and " " not in text:
         ok, info = activate_user_with_key(user_id, text)
         if ok:
+            await msg.reply(f"✅ تم تفعيل اشتراكك حتى: {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(info))}")
+        else:
+            if info == "invalid":
+                await msg.reply("❌ المفتاح غير صحيح.")
+            elif info == "used":
+                await msg.reply("⚠️ المفتاح مستخدم بالفعل.")
+            else:
+                await msg.reply("❌ حدث خطأ أثناء التفعيل.")
+        return
+
+    await msg.reply("❓ أمر غير معروف أو لم يُنفذ بعد.")
+
+# ================= تشغيل البوت =================
+async def main():
+    init_db()
+    print("✅ قاعدة البيانات جاهزة")
+    try:
+        await dp.start_polling(bot)
+    except (KeyboardInterrupt, SystemExit):
+        print("🛑 البوت توقف")
+
+if __name__ == "__main__":
+    asyncio.run(main())
