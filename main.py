@@ -5,9 +5,10 @@ import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
+import time
 
 # ===== إعداد البوت =====
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # <== هنا الاسم الصحيح للمتغير
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7378889303"))
 
 if not TOKEN:
@@ -18,19 +19,32 @@ dp = Dispatcher()
 logging.basicConfig(level=logging.INFO)
 
 # ===== قاعدة البيانات =====
-DB_FILE = "users.db"
+DB_FILE = "bot_data.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    # جدول المستخدمين
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER UNIQUE,
-        active INTEGER DEFAULT 0
+        active INTEGER DEFAULT 0,
+        expiry INTEGER DEFAULT 0,
+        banned INTEGER DEFAULT 0
+    )''')
+    # جدول المفاتيح
+    c.execute('''CREATE TABLE IF NOT EXISTS keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key_code TEXT UNIQUE,
+        duration_days INTEGER,
+        used_by INTEGER,
+        created_at INTEGER,
+        expiry INTEGER
     )''')
     conn.commit()
     conn.close()
 
+# ===== دوال قاعدة البيانات =====
 def add_user(user_id):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -38,15 +52,64 @@ def add_user(user_id):
     conn.commit()
     conn.close()
 
-def set_active(user_id, status):
+def activate_user_with_key(user_id, key_code):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("UPDATE users SET active = ? WHERE user_id = ?", (status, user_id))
+    c.execute("SELECT * FROM keys WHERE key_code=?", (key_code,))
+    k = c.fetchone()
+    if not k:
+        conn.close()
+        return False, 'invalid'
+    if k[3]:  # used_by
+        conn.close()
+        return False, 'used'
+    now = int(time.time())
+    duration = k[2]  # duration_days
+    expiry = now + duration*24*3600
+    c.execute("UPDATE keys SET used_by=?, expiry=? WHERE key_code=?", (user_id, expiry, key_code))
+    c.execute("UPDATE users SET active=1, expiry=?, banned=0 WHERE user_id=?", (expiry, user_id))
+    conn.commit()
+    conn.close()
+    return True, expiry
+
+def create_key(key_code, duration_days):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    now = int(time.time())
+    c.execute("INSERT OR IGNORE INTO keys (key_code, duration_days, created_at) VALUES (?,?,?)", 
+              (key_code, duration_days, now))
     conn.commit()
     conn.close()
 
-def is_admin(user_id):
-    return user_id == ADMIN_ID
+def list_keys():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT * FROM keys ORDER BY id DESC")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def get_active_users():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT user_id, active, expiry, banned FROM users")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def ban_user(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE users SET banned=1, active=0 WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def unban_user(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE users SET banned=0 WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
 
 # ===== دالة لتأمين النصوص من HTML =====
 def escape_html(text: str) -> str:
@@ -71,55 +134,93 @@ async def start_cmd(message: Message):
     )
     await message.answer(welcome_text)
 
-# ===== أمر الأدمن =====
+# ===== أمر الأدمن - فتح القائمة مباشرة =====
 @dp.message(Command("admin"))
 async def admin_cmd(message: Message):
     user_id = message.from_user.id
-    if not is_admin(user_id):
-        await message.answer("🚫 الأمر ده مش متاح ليك.")
+    if user_id != ADMIN_ID:
+        await message.answer("🚫 أنت لست الأدمن.")
         return
 
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add("📋 عرض المستخدمين", "🔑 تفعيل مستخدم")
-    await message.answer("👑 مرحباً أدمن! اختر أمر من القايمة:", reply_markup=keyboard)
+    keyboard.add("🔑 إنشاء مفتاح جديد", "🗝️ عرض المفاتيح")
+    keyboard.add("📋 عرض المستخدمين", "🚫 حظر/فك حظر مستخدم")
+    await message.answer("👑 مرحباً أدمن! هذه قائمة الأوامر المتاحة:", reply_markup=keyboard)
 
-# ===== الأوامر داخل قايمة الأدمن =====
+# ===== التعامل مع رسائل الأدمن =====
 @dp.message()
 async def handle_admin_panel(message: Message):
     user_id = message.from_user.id
     text = message.text.strip()
 
-    if is_admin(user_id):
-        if text == "📋 عرض المستخدمين":
-            conn = sqlite3.connect(DB_FILE)
-            c = conn.cursor()
-            c.execute("SELECT user_id, active FROM users")
-            users = c.fetchall()
-            conn.close()
+    if user_id != ADMIN_ID:
+        # مستخدم عادي يرسل مفتاح
+        if len(text) > 3:
+            ok, info = activate_user_with_key(user_id, text)
+            if ok:
+                await message.reply(f"✅ تم تفعيل اشتراكك حتى: {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(info))}")
+            else:
+                if info == 'invalid':
+                    await message.reply("❌ المفتاح غير صحيح.")
+                elif info == 'used':
+                    await message.reply("⚠️ المفتاح مستخدم بالفعل.")
+            return
+        await message.reply("❓ أمر غير معروف.")
+        return
 
-            if not users:
-                await message.answer("🚫 مفيش مستخدمين لسه.")
-                return
+    # ==== أوامر الأدمن ====
+    if text == "🔑 إنشاء مفتاح جديد":
+        await message.reply("✍️ ابعت المفتاح الجديد وعدد الأيام مفصول بمسافة مثال:\n`MYKEY123 7`", parse_mode="Markdown")
 
-            msg = "👥 <b>قائمة المستخدمين:</b>\n\n"
-            for u in users:
-                status = "✅ مفعل" if u[1] else "❌ غير مفعل"
-                msg += f"🆔 {u[0]} - {status}\n"
-            await message.answer(msg)
+    elif " " in text and text.split()[1].isdigit():
+        # إنشاء مفتاح فعلي
+        parts = text.split()
+        k, dur = parts[0], int(parts[1])
+        create_key(k, dur)
+        await message.reply(f"✅ تم إنشاء المفتاح `{k}` لمدة {dur} يوم.", parse_mode="Markdown")
 
-        elif text == "🔑 تفعيل مستخدم":
-            await message.answer("✍️ ابعت رقم المستخدم اللي عايز تفعل حسابه بعديها على طول.")
+    elif text == "🗝️ عرض المفاتيح":
+        keys = list_keys()
+        if not keys:
+            await message.reply("🚫 لا توجد مفاتيح حتى الآن.")
+            return
+        msg = "🗝️ <b>المفاتيح النشطة:</b>\n\n"
+        for k in keys:
+            used = k[3] if k[3] else "متاح"
+            expiry = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(k[5])) if k[5] else "غير محدد"
+            msg += f"{k[1]} - {k[2]} يوم - مستخدم بواسطة: {used} - انتهاء: {expiry}\n"
+        await message.reply(msg)
 
-        elif text.isdigit():
-            target_id = int(text)
-            set_active(target_id, 1)
-            await message.answer(f"✅ تم تفعيل المستخدم {target_id}")
+    elif text == "📋 عرض المستخدمين":
+        users = get_active_users()
+        if not users:
+            await message.reply("🚫 لا يوجد مستخدمين.")
+            return
+        msg = "👥 <b>المستخدمين:</b>\n\n"
+        for u in users:
+            status = "✅ مفعل" if u[1] and not u[4] else "❌ غير مفعل/محظور"
+            expiry = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(u[2])) if u[2] else "غير محدد"
+            msg += f"🆔 {u[0]} - {status} - انتهاء: {expiry}\n"
+        await message.reply(msg)
 
+    elif text == "🚫 حظر/فك حظر مستخدم":
+        await message.reply("✍️ ابعت رقم المستخدم لحظره أو فك الحظر.")
+
+    elif text.isdigit():
+        target_id = int(text)
+        # تحقق إذا محظور أو لا
+        users = get_active_users()
+        user_ids = [u[0] for u in users]
+        if target_id in user_ids:
+            # إذا موجود وغير محظور
+            ban_user(target_id)
+            await message.reply(f"🚫 تم حظر المستخدم {target_id}")
         else:
-            await message.answer("ℹ️ استخدم الأزرار لاختيار أمر من قايمة الأدمن.")
+            unban_user(target_id)
+            await message.reply(f"✅ تم فك الحظر عن المستخدم {target_id}")
 
     else:
-        await message.answer("💬 رسالتك وصلت! الدعم هيرد عليك قريب ❤️")
+        await message.reply("ℹ️ استخدم الأزرار لاختيار أمر من قايمة الأدمن.")
 
 # ===== تشغيل البوت =====
 async def main():
