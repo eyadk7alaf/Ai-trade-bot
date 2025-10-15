@@ -13,6 +13,11 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
 dp = Dispatcher()
 
+# ----------- أهم تعديل ----------
+# التأكد من إنشاء الجداول قبل أي استخدام
+init_db()
+# --------------------------------
+
 def format_expiry(ts):
     if not ts: return 'غير محدد'
     import datetime
@@ -22,7 +27,11 @@ def format_expiry(ts):
 @dp.message(Command('start'))
 async def cmd_start(msg: Message):
     add_or_update_user(msg.from_user.id, getattr(msg.from_user, 'username', None))
-    await msg.reply("أهلاً! هذا بوت 'توصيات AI'\nللاشتراك: أرسل مفتاح التفعيل الذي اشتريته.\nلو أنت الأدمن ارسل /admin")
+    await msg.reply(
+        "أهلاً! هذا بوت 'توصيات AI'\n"
+        "للاشتراك: أرسل مفتاح التفعيل الذي اشتريته.\n"
+        "لو أنت الأدمن ارسل /admin"
+    )
 
 @dp.message()
 async def handle_text(msg: Message):
@@ -80,19 +89,21 @@ async def send_signal_to_user(user_id, signal):
         print('send signal error', e)
 
 async def on_startup():
+    # التأكد مرة أخرى من وجود الجداول
     init_db()
+    
     from database import list_keys
     if len(list_keys())==0:
         create_key('XAU-1D-DEMO', 1)
         create_key('XAU-7D-DEMO', 7)
         create_key('XAU-30D-DEMO', 30)
-    # start scheduler in background, pass send_signal_to_user to avoid circular import
+    
+    # start scheduler in background
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, start_scheduler, send_signal_to_user)
     print('Bot started')
 
 if __name__ == '__main__':
-    import asyncio
     try:
         asyncio.run(dp.start_polling(bot, on_startup=on_startup))
     except (KeyboardInterrupt, SystemExit):
