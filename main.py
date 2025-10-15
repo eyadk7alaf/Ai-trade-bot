@@ -29,7 +29,8 @@ def init_db():
             telegram_id INTEGER UNIQUE,
             username TEXT,
             active INTEGER DEFAULT 0,
-            expiry INTEGER DEFAULT 0
+            expiry INTEGER DEFAULT 0,
+            banned INTEGER DEFAULT 0
         )
     """)
     cur.execute("""
@@ -95,10 +96,24 @@ def list_keys():
 def get_active_users():
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT telegram_id, username, expiry FROM users WHERE active=1")
+    cur.execute("SELECT telegram_id, username, expiry FROM users WHERE active=1 AND banned=0")
     rows = cur.fetchall()
     conn.close()
     return rows
+
+def ban_user(telegram_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET banned=1 WHERE telegram_id=?", (telegram_id,))
+    conn.commit()
+    conn.close()
+
+def unban_user(telegram_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET banned=0 WHERE telegram_id=?", (telegram_id,))
+    conn.commit()
+    conn.close()
 
 # =================== إعداد البوت ===================
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
@@ -110,7 +125,7 @@ def format_expiry(ts):
         return 'غير محدد'
     return datetime.datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S UTC')
 
-# =================== الأوامر ===================
+# =================== أوامر البوت ===================
 @dp.message(Command("start"))
 async def start(msg: types.Message):
     add_or_update_user(msg.from_user.id, getattr(msg.from_user, 'username', None))
@@ -123,20 +138,32 @@ async def admin_menu(msg: types.Message):
         await msg.reply("❌ غير مسموح بالدخول هنا.")
         return
 
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add("إنشاء مفتاح 🔑", "عرض المفاتيح 📜")
-    keyboard.add("رسالة لكل المستخدمين 📢", "رسالة للمشتركين ✅")
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    keyboard.add(
+        types.KeyboardButton("إنشاء مفتاح 🔑"),
+        types.KeyboardButton("عرض المفاتيح 📜")
+    )
+    keyboard.add(
+        types.KeyboardButton("رسالة لكل المستخدمين 📢"),
+        types.KeyboardButton("رسالة للمشتركين ✅")
+    )
+    keyboard.add(
+        types.KeyboardButton("حظر مستخدم ❌"),
+        types.KeyboardButton("إلغاء حظر مستخدم ✅")
+    )
     await msg.reply("📋 قائمة أوامر الأدمن:", reply_markup=keyboard)
 
+# =================== التعامل مع نصوص المستخدم ===================
 @dp.message()
 async def handle_text(msg: types.Message):
     text = msg.text.strip()
 
+    # =================== أوامر الأدمن ===================
     if msg.from_user.id == ADMIN_ID:
-        if text.startswith("/createkey") or text.startswith("إنشاء مفتاح"):
-            await msg.reply("🪄 استخدم الأمر بالشكل التالي:\n/createkey <الكود> <المدة بالأيام>")
+        if text.startswith("/createkey") or text.startswith("إنشاء مفتاح 🔑"):
+            await msg.reply("🪄 استخدم الأمر بالشكل التالي:\n/createkey `كود_المفتاح` `المدة_بالأيام`")
             return
-        elif text.startswith("/listkeys") or text.startswith("عرض المفاتيح"):
+        elif text.startswith("/listkeys") or text.startswith("عرض المفاتيح 📜"):
             rows = list_keys()
             if not rows:
                 await msg.reply("❌ لا توجد مفاتيح بعد.")
@@ -144,11 +171,23 @@ async def handle_text(msg: types.Message):
             reply = "📜 <b>قائمة المفاتيح:</b>\n"
             for r in rows:
                 used = "✅ مستخدم" if r['used_by'] else "🟢 متاح"
-                reply += f"🔑 {r['key_code']} - {r['duration_days']} يوم - {used}\n"
+                reply += f"🔑 <code>{r['key_code']}</code> - {r['duration_days']} يوم - {used}\n"
             await msg.reply(reply)
             return
+        elif text.startswith("حظر مستخدم ❌") or text.startswith("/ban"):
+            await msg.reply("🛑 أرسل أيدي المستخدم لحظره:")
+            return
+        elif text.startswith("إلغاء حظر مستخدم ✅") or text.startswith("/unban"):
+            await msg.reply("✅ أرسل أيدي المستخدم لإلغاء الحظر:")
+            return
+        elif text.startswith("رسالة لكل المستخدمين 📢") or text.startswith("/msgall"):
+            await msg.reply("📢 أرسل الرسالة لتصل لكل المستخدمين:")
+            return
+        elif text.startswith("رسالة للمشتركين ✅") or text.startswith("/msgsub"):
+            await msg.reply("✅ أرسل الرسالة لتصل لكل المشتركين:")
+            return
 
-    # تفعيل المفتاح للمستخدم
+    # =================== تفعيل الاشتراك ===================
     if len(text) > 3:
         ok, info = activate_user_with_key(msg.from_user.id, text)
         if ok:
@@ -166,7 +205,7 @@ async def handle_text(msg: types.Message):
 
 # =================== تشغيل البوت ===================
 async def main():
-    init_db()  # أول حاجة ننشئ قاعدة البيانات والجداول
+    init_db()
     print("✅ قاعدة البيانات جاهزة")
     await dp.start_polling(bot)
 
