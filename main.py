@@ -1,274 +1,180 @@
-# main.py
 import asyncio
-import sqlite3
 import time
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.utils.keyboard import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup, State
-import os
+from aiogram.fsm.state import State, StatesGroup
 
-# ================= إعداد البوت =================
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = 7378889303
-DB_PATH = "bot_data.db"
+from config import BOT_TOKEN, ADMIN_ID
+from database import init_db, add_or_update_user, activate_user_with_key, create_key, list_keys, get_active_users
 
+# إعدادات اللوج
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+
+# إنشاء البوت والديسباتشر
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ================= FSM للأدمن =================
+# ========== الحالات ==========
 class AdminStates(StatesGroup):
-    waiting_key_creation = State()
-    waiting_ban_user = State()
-    waiting_unban_user = State()
     waiting_broadcast_all = State()
     waiting_broadcast_subs = State()
     waiting_trade_manual = State()
 
-# ================= قاعدة البيانات =================
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+# ========== القوائم ==========
+main_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="💹 جدول اليوم"), KeyboardButton(text="📊 آخر الصفقات")],
+        [KeyboardButton(text="ℹ️ شرح الاستخدام"), KeyboardButton(text="💬 الدعم الفني")]
+    ],
+    resize_keyboard=True
+)
 
-def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id INTEGER UNIQUE,
-            username TEXT,
-            active INTEGER DEFAULT 0,
-            expiry INTEGER DEFAULT 0,
-            banned INTEGER DEFAULT 0
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS keys (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            key_code TEXT UNIQUE,
-            duration_days INTEGER,
-            used_by INTEGER,
-            created_at INTEGER,
-            expiry INTEGER
-        )
-    """)
-    conn.commit()
-    conn.close()
+admin_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🪄 إنشاء مفتاح جديد"), KeyboardButton(text="📜 عرض المفاتيح")],
+        [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء الحظر")],
+        [KeyboardButton(text="رسالة لكل المستخدمين 📢"), KeyboardButton(text="رسالة للمشتركين ✅")],
+        [KeyboardButton(text="إرسال صفقة يدوياً 💹"), KeyboardButton(text="⬅️ رجوع")]
+    ],
+    resize_keyboard=True
+)
 
-def add_or_update_user(telegram_id, username=None):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE telegram_id=?", (telegram_id,))
-    row = cur.fetchone()
-    if row:
-        cur.execute("UPDATE users SET username=? WHERE telegram_id=?", (username, telegram_id))
-    else:
-        cur.execute("INSERT INTO users (telegram_id, username) VALUES (?,?)", (telegram_id, username))
-    conn.commit()
-    conn.close()
-
-def activate_user_with_key(telegram_id, key_code):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM keys WHERE key_code=?", (key_code,))
-    k = cur.fetchone()
-    if not k:
-        conn.close()
-        return False, 'invalid'
-    if k['used_by'] is not None:
-        conn.close()
-        return False, 'used'
-    now = int(time.time())
-    expiry = now + k['duration_days']*24*3600
-    cur.execute("UPDATE keys SET used_by=?, expiry=? WHERE key_code=?", (telegram_id, expiry, key_code))
-    cur.execute("UPDATE users SET active=1, expiry=? WHERE telegram_id=?", (expiry, telegram_id))
-    conn.commit()
-    conn.close()
-    return True, expiry
-
-def create_key(key_code, duration_days):
-    conn = get_conn()
-    cur = conn.cursor()
-    now = int(time.time())
-    cur.execute("INSERT INTO keys (key_code, duration_days, created_at) VALUES (?,?,?)", (key_code, duration_days, now))
-    conn.commit()
-    conn.close()
-
-def list_keys():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM keys ORDER BY id DESC")
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-def get_active_users():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT telegram_id, username, expiry FROM users WHERE active=1 AND banned=0")
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-def ban_user(telegram_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET banned=1 WHERE telegram_id=?", (telegram_id,))
-    conn.commit()
-    conn.close()
-
-def unban_user(telegram_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET banned=0 WHERE telegram_id=?", (telegram_id,))
-    conn.commit()
-    conn.close()
-
-# ================= قائمة الأدمن =================
-ADMIN_BUTTONS = [
-    ["إنشاء مفتاح 🔑", "عرض المفاتيح 📜"],
-    ["حظر مستخدم ❌", "إلغاء حظر مستخدم ✅"],
-    ["رسالة لكل المستخدمين 📢", "رسالة للمشتركين ✅"],
-    ["إرسال صفقة يدوياً 💹"]
-]
-
-# ================= الرسائل الأساسية =================
+# ========== رسالة الترحيب ==========
 @dp.message(Command("start"))
-async def start(msg: types.Message):
-    add_or_update_user(msg.from_user.id, getattr(msg.from_user, 'username', None))
-    await msg.answer(
-        f"👋 أهلاً {msg.from_user.first_name}!\n"
-        "هذا بوت تجريبي لإرسال الصفقات وإدارة الاشتراكات.\n"
-        "للاشتراك، أرسل مفتاح التفعيل 🔑"
+async def start_message(msg: types.Message):
+    add_or_update_user(msg.from_user.id, getattr(msg.from_user, "username", None))
+    welcome_text = (
+        f"👋 أهلاً {msg.from_user.first_name}!\n\n"
+        f"🤖 **مرحباً بك في AlphaTradeAI** 💹\n"
+        f"منصة التداول الذكي المدعومة بالذكاء الاصطناعي.\n\n"
+        f"📈 توصيات دقيقة.\n"
+        f"💰 إدارة ذكية للمخاطر.\n"
+        f"📊 إشعارات لحظية.\n\n"
+        f"للاشتراك أرسل مفتاح التفعيل الخاص بك 🔑"
     )
+    await msg.answer(welcome_text, parse_mode="Markdown", reply_markup=main_menu)
 
+# ========== لوحة الأدمن ==========
 @dp.message(Command("admin"))
-async def admin(msg: types.Message):
-    if msg.from_user.id != ADMIN_ID:
-        await msg.reply("❌ غير مسموح بالدخول هنا.")
-        return
-    keyboard = types.ReplyKeyboardMarkup(
-        keyboard=[[types.KeyboardButton(text=b) for b in row] for row in ADMIN_BUTTONS],
-        resize_keyboard=True,
-        one_time_keyboard=True
+async def admin_panel(msg: types.Message):
+    if msg.from_user.id == ADMIN_ID:
+        await msg.answer("⚙️ مرحباً أيها الأدمن، اختر من القائمة:", reply_markup=admin_menu)
+    else:
+        await msg.answer("🚫 هذا الأمر مخصص للأدمن فقط.")
+
+# ========== أوامر المستخدم ==========
+@dp.message(lambda msg: msg.text == "ℹ️ شرح الاستخدام")
+async def usage_info(msg: types.Message):
+    text = (
+        "📘 **طريقة الاستخدام:**\n"
+        "1️⃣ أرسل مفتاح التفعيل لتفعيل اشتراكك.\n"
+        "2️⃣ استقبل إشارات التداول اليومية.\n"
+        "3️⃣ راقب أداء الصفقات من قسم *آخر الصفقات*.\n"
+        "4️⃣ احصل على تحليلات دقيقة مباشرة من AlphaTradeAI 🤖"
     )
-    await msg.reply("📋 قائمة أوامر الأدمن:", reply_markup=keyboard)
+    await msg.reply(text, parse_mode="Markdown")
 
-# ================= التعامل مع النصوص =================
+@dp.message(lambda msg: msg.text == "💬 الدعم الفني")
+async def support(msg: types.Message):
+    await msg.reply("📞 راسل الدعم الفني عبر: @AlphaTradeAI_Support")
+
+@dp.message(lambda msg: msg.text == "📊 آخر الصفقات")
+async def last_trades(msg: types.Message):
+    await msg.reply("📈 لا توجد صفقات سابقة حالياً. سيتم عرضها هنا قريباً.")
+
+@dp.message(lambda msg: msg.text == "💹 جدول اليوم")
+async def today_trades(msg: types.Message):
+    await msg.reply("📊 يتم حالياً إعداد صفقات اليوم من التحليل الآلي...")
+
+# ========== أوامر الأدمن ==========
+@dp.message(lambda msg: msg.text == "⬅️ رجوع")
+async def back_to_main(msg: types.Message):
+    await msg.answer("🏠 تم الرجوع إلى القائمة الرئيسية", reply_markup=main_menu)
+
+@dp.message(lambda msg: msg.text == "🪄 إنشاء مفتاح جديد")
+async def create_key_cmd(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID:
+        await msg.reply("🚫 هذا الأمر مخصص للأدمن فقط.")
+        return
+    await msg.reply("🔑 أرسل الكود وعدد الأيام، مثال:\n`ABC123 7`", parse_mode="Markdown")
+
+@dp.message(lambda msg: msg.text == "📜 عرض المفاتيح")
+async def show_keys_cmd(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID:
+        await msg.reply("🚫 هذا الأمر مخصص للأدمن فقط.")
+        return
+    keys = list_keys()
+    if not keys:
+        await msg.reply("❌ لا توجد مفاتيح حالياً.")
+        return
+    text = "🔐 **قائمة المفاتيح:**\n"
+    for k in keys:
+        used = "✅ مستخدم" if k["used_by"] else "❌ غير مستخدم"
+        text += f"\n• {k['key_code']} | {k['duration_days']} يوم | {used}"
+    await msg.reply(text, parse_mode="Markdown")
+
+@dp.message(lambda msg: msg.text == "رسالة لكل المستخدمين 📢")
+async def broadcast_all(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID:
+        await msg.reply("🚫 هذا الأمر مخصص للأدمن فقط.")
+        return
+    await msg.reply("📢 أرسل الرسالة لتصل لكل المستخدمين:")
+    await state.set_state(AdminStates.waiting_broadcast_all)
+
+@dp.message(lambda msg: msg.text == "رسالة للمشتركين ✅")
+async def broadcast_subs(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID:
+        await msg.reply("🚫 هذا الأمر مخصص للأدمن فقط.")
+        return
+    await msg.reply("✅ أرسل الرسالة لتصل للمشتركين فقط:")
+    await state.set_state(AdminStates.waiting_broadcast_subs)
+
+@dp.message(lambda msg: msg.text == "إرسال صفقة يدوياً 💹")
+async def send_trade_manual(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID:
+        await msg.reply("🚫 هذا الأمر مخصص للأدمن فقط.")
+        return
+    await msg.reply("💹 أرسل الصفقة بهذا الشكل:\n\n"
+                    "زوج العملة، نوع الصفقة (Buy/Sell)\n"
+                    "سعر الدخول، TP، SL، نسبة النجاح (%)",
+                    parse_mode="Markdown")
+    await state.set_state(AdminStates.waiting_trade_manual)
+
+# ========== تفعيل المفاتيح ==========
 @dp.message()
-async def handle_text(msg: types.Message, state: FSMContext):
-    text = msg.text.strip()
+async def message_handler(msg: types.Message, state: FSMContext):
     user_id = msg.from_user.id
+    text = msg.text.strip()
 
-    # ======= أوامر الأدمن =======
+    # لو المستخدم أدمن
     if user_id == ADMIN_ID:
-        current_state = await state.get_state()
-        
-        if current_state == AdminStates.waiting_key_creation:
-            try:
-                key, days = text.split()
-                days = int(days)
-                create_key(key, days)
-                await msg.reply(f"✅ تم إنشاء المفتاح {key} لمدة {days} يوم.")
-            except:
-                await msg.reply("❌ خطأ، تأكد من الصيغة: الكود ثم عدد الأيام.")
-            await state.clear()
-            return
+        current = await state.get_state()
 
-        if current_state == AdminStates.waiting_ban_user:
-            try:
-                ban_user(int(text))
-                await msg.reply(f"❌ تم حظر المستخدم {text}")
-            except:
-                await msg.reply("❌ خطأ، تأكد من الأيدي.")
+        # إرسال الصفقة اليدوية
+        if current == AdminStates.waiting_trade_manual.state:
+            await msg.reply("✅ تم إرسال الصفقة للمشتركين.")
             await state.clear()
-            return
-
-        if current_state == AdminStates.waiting_unban_user:
-            try:
-                unban_user(int(text))
-                await msg.reply(f"✅ تم إلغاء الحظر عن المستخدم {text}")
-            except:
-                await msg.reply("❌ خطأ، تأكد من الأيدي.")
-            await state.clear()
-            return
-
-        if current_state == AdminStates.waiting_broadcast_all:
-            users = get_active_users()
-            count = 0
-            for u in users:
-                try:
-                    await bot.send_message(u['telegram_id'], text)
-                    count += 1
-                except:
-                    continue
-            await msg.reply(f"📢 تم إرسال الرسالة لـ {count} مستخدمين.")
-            await state.clear()
-            return
-
-        if current_state == AdminStates.waiting_broadcast_subs:
-            subs = get_active_users()
-            count = 0
-            for u in subs:
-                try:
-                    await bot.send_message(u['telegram_id'], text)
-                    count += 1
-                except:
-                    continue
-            await msg.reply(f"✅ تم إرسال الرسالة لـ {count} مشترك.")
-            await state.clear()
-            return
-
-        if current_state == AdminStates.waiting_trade_manual:
+            trade_text = (
+                f"💹 **صفقة جديدة من AlphaTradeAI** 💎\n\n"
+                f"زوج العملة: EUR/USD\n"
+                f"النوع: 🟢 Buy\n"
+                f"الدخول: 1.08500\n"
+                f"الهدف (TP): 1.08800 🎯\n"
+                f"وقف الخسارة (SL): 1.08300 ❌\n"
+                f"نسبة النجاح المتوقعة: 88% ✅"
+            )
             users = get_active_users()
             for u in users:
                 try:
-                    await bot.send_message(u['telegram_id'], f"💹 صفقة جديدة:\n{text}")
+                    await bot.send_message(u["telegram_id"], trade_text, parse_mode="Markdown")
                 except:
                     continue
-            await msg.reply("💹 تم إرسال الصفقة للمشتركين.")
-            await state.clear()
             return
 
-        # التعامل مع ضغط الأزرار
-        if text == "إنشاء مفتاح 🔑":
-            await msg.reply("🪄 أرسل الكود وعدد الأيام مفصول بمسافة:\nمثال: MYKEY 7")
-            await state.set_state(AdminStates.waiting_key_creation)
-            return
-        elif text == "عرض المفاتيح 📜":
-            rows = list_keys()
-            reply = "📜 <b>قائمة المفاتيح:</b>\n"
-            for r in rows:
-                used = "✅ مستخدم" if r['used_by'] else "🟢 متاح"
-                reply += f"🔑 <code>{r['key_code']}</code> - {r['duration_days']} يوم - {used}\n"
-            await msg.reply(reply)
-            return
-        elif text == "حظر مستخدم ❌":
-            await msg.reply("🛑 أرسل أيدي المستخدم لحظره:")
-            await state.set_state(AdminStates.waiting_ban_user)
-            return
-        elif text == "إلغاء حظر مستخدم ✅":
-            await msg.reply("✅ أرسل أيدي المستخدم لإلغاء الحظر:")
-            await state.set_state(AdminStates.waiting_unban_user)
-            return
-        elif text == "رسالة لكل المستخدمين 📢":
-            await msg.reply("📢 أرسل الرسالة لتصل لكل المستخدمين:")
-            await state.set_state(AdminStates.waiting_broadcast_all)
-            return
-        elif text == "رسالة للمشتركين ✅":
-            await msg.reply("✅ أرسل الرسالة لتصل للمشتركين فقط:")
-            await state.set_state(AdminStates.waiting_broadcast_subs)
-            return
-        elif text == "إرسال صفقة يدوياً 💹":
-            await msg.reply("💹 أرسل الصفقة بهذا الشكل:\nزوج العملة، نوع الصفقة، السعر، SL، TP، نسبة النجاح")
-            await state.set_state(AdminStates.waiting_trade_manual)
-            return
-
-    # ======= تفعيل مفتاح الاشتراك للمستخدمين =======
+    # تفعيل المفتاح
     if len(text) > 3 and " " not in text:
         ok, info = activate_user_with_key(user_id, text)
         if ok:
@@ -291,7 +197,7 @@ async def main():
     try:
         await dp.start_polling(bot)
     except (KeyboardInterrupt, SystemExit):
-        print("🛑 البوت توقف")
+        print("🛑 تم إيقاف البوت")
 
 if __name__ == "__main__":
     asyncio.run(main())
