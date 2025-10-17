@@ -2,3 +2,4 @@ aiogram>=3.4.0  # (أو الإصدار الأحدث)
 yfinance
 schedule
 pandas
+psycopg2-binary
