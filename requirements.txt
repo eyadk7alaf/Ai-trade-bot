@@ -1,5 +1,4 @@
-aiogram==3.1.0
-requests
+aiogram>=3.4.0  # (أو الإصدار الأحدث)
 yfinance
 schedule
 pandas
