@@ -92,8 +92,8 @@ def add_user(user_id, username):
     cursor.execute("""
         INSERT INTO users (user_id, username, joined_at) 
         VALUES (%s, %s, %s)
-        ON CONFLICT (user_id) DO NOTHING
-    """, (user_id, username, time.time()))
+        ON CONFLICT (user_id) DO UPDATE SET username = %s -- تحديث اسم المستخدم إذا تغير
+    """, (user_id, username, time.time(), username))
     conn.commit()
     conn.close()
 
@@ -158,7 +158,7 @@ def activate_key(user_id, key):
             user_data = cursor.fetchone() 
             
             # معالجة القيمة الفارغة بأمان
-            vip_until_ts = user_data[0] if user_data else 0.0 
+            vip_until_ts = user_data[0] if user_data and user_data[0] is not None else 0.0 
             
             if vip_until_ts > time.time():
                 start_date = datetime.fromtimestamp(vip_until_ts)
@@ -186,7 +186,7 @@ def get_user_vip_status(user_id):
     cursor.execute("SELECT vip_until FROM users WHERE user_id = %s", (user_id,))
     result = cursor.fetchone()
     conn.close()
-    if result and result[0] > time.time():
+    if result and result[0] is not None and result[0] > time.time():
         return datetime.fromtimestamp(result[0]).strftime("%Y-%m-%d %H:%M")
     return "غير مشترك"
 
@@ -226,13 +226,13 @@ class AccessMiddleware(BaseMiddleware):
                  await event.answer("🚫 حسابك محظور من استخدام البوت. يمكنك التواصل مع الدعم أو التحقق من الأسعار/المعلومات فقط.")
                  return
             
-        allowed_for_all = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك", "💰 خطة الأسعار VIP"]
+        allowed_for_all = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك", "💰 خطة الأسعار VIP", "📈 سعر السوق الحالي"]
         
         if isinstance(event, types.Message) and event.text in allowed_for_all:
              return await handler(event, data) 
 
         if not is_user_vip(user_id):
-            if isinstance(event, types.Message):
+            if isinstance(event, types.Message) and event.text not in allowed_for_all:
                 await event.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط. يرجى تفعيل مفتاح اشتراك لتتمكن من استخدامها.")
             return
 
@@ -282,7 +282,8 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         delta = data['Close'].diff()
         gain = delta.where(delta > 0, 0)
         loss = -delta.where(delta < 0, 0)
-        RS = gain.ewm(com=14-1, min_periods=14, adjust=False).mean() / loss.ewm(com=14-1, min_periods=14, adjust=False).mean()
+        # تجنب القسمة على صفر في حالة عدم وجود خسارة (أو مكسب)
+        RS = gain.ewm(com=14-1, min_periods=14, adjust=False).mean() / loss.ewm(com=14-1, min_periods=14, adjust=False).mean().replace(0, 1e-10)
         data['RSI'] = 100 - (100 / (1 + RS))
         
         # مؤشر ATR (التقلب)
@@ -399,6 +400,7 @@ async def send_trade_signal(admin_triggered=False):
     all_users = get_all_users_ids()
     
     for uid, is_banned_status in all_users:
+        # إرسال الرسالة فقط للمشتركين غير المحظورين
         if is_banned_status == 0 and uid != ADMIN_ID and is_user_vip(uid):
             try:
                 await bot.send_message(uid, trade_msg)
@@ -477,8 +479,10 @@ async def admin_panel(msg: types.Message):
 
 @dp.message(F.text == "تحليل فوري ⚡️")
 async def analyze_market_now(msg: types.Message):
-    if msg.from_user.id != ADMIN_ID: 
-        if not is_user_vip(msg.from_user.id): return
+    if msg.from_user.id != ADMIN_ID and not is_user_vip(msg.from_user.id): 
+        # رسالة خاصة في حال كان مستخدم غير أدمن وغير VIP يحاول استخدام الميزة
+        await msg.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط.")
+        return
     
     await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
     
@@ -499,10 +503,6 @@ async def analyze_market_now(msg: types.Message):
 async def get_current_price(msg: types.Message):
     price_info_msg, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
     await msg.reply(price_info_msg)
-
-@dp.message(F.text == "📊 جدول اليوم")
-async def get_current_signal(msg: types.Message):
-    await msg.reply("🗓️ يتم تحليل السوق حاليًا. ستصلك الصفقات المجدولة تلقائيًا إذا توفرت.")
 
 @dp.message(F.text == "📝 حالة الاشتراك")
 async def show_subscription_status(msg: types.Message):
@@ -681,24 +681,30 @@ async def back_to_user_menu(msg: types.Message):
 @dp.message(F.text.in_(["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI"]))
 async def handle_user_actions(msg: types.Message):
     if msg.text == "💬 تواصل مع الدعم":
-        await msg.reply(f"📞 يمكنك التواصل مع الإدارة مباشرة عبر @{ADMIN_USERNAME} للإستفسارات أو الدعم.")
+        await msg.reply(f"📞 يمكنك التواصل مع الإدارة مباشرة عبر @{ADMIN_USERNAME} للاستفسارات أو الدعم.")
     elif msg.text == "ℹ️ عن AlphaTradeAI":
         marketing_text = f"""
-🚀 <b>AlphaTradeAI: ثورة الذكاء الاصطناعي في تداول الذهب!</b> 🚀
+🚀 <b>AlphaTradeAI: ثورة التحليل الكمّي في تداول الذهب!</b> 🚀
 
-نحن لسنا مجرد بوت، بل نظام متكامل تم بناؤه على سنوات من الخبرة والخوارزميات المتقدمة. هدفنا هو أن نجعلك تتداول بثقة المحترفين، بعيداً عن ضجيج السوق وتقلباته العاطفية.
-
-━━━━━━━━━━━━━━━
-✨ <b>ماذا يقدم لك الاشتراك VIP؟</b>
-1.  <b>الإشارات فائقة الدقة (High-Confidence):</b>
-    نظامنا يراقب حركة الذهب (XAUUSD) على مدار الساعة. نستخدم نموذج التحليل متعدد الفلاتر (EMA, RSI, ATR, HTF) لتصفية الإشارات واختيار فقط الصفقات التي تتجاوز نسبة ثقة <b>{int(CONFIDENCE_THRESHOLD*100)}%</b>.
-2.  <b>إدارة مخاطر احترافية:</b>
-    كل إشارة تُرسَل إليك هي صفقة جاهزة للتنفيذ. تحصل على سعر الدخول (Entry Price)، هدف الربح (TP) ونقطة وقف الخسارة (SL).
-3.  <b>توفير الوقت والجهد:</b>
-    سيتولى AlphaTradeAI التحليل المعقد وإرسال ما بين <b>4 إلى 7 صفقات</b> مجدولة يومياً.
+نحن لسنا مجرد بوت، بل منصة تحليل ذكية ومؤتمتة بالكامل، مصممة لملاحقة أكبر الفرص في سوق الذهب (XAUUSD). مهمتنا هي تصفية ضجيج السوق وتقديم إشارات **مؤكدة فقط**.
 
 ━━━━━━━━━━━━━━━
-💰 <b>لتحقيق الأرباح بذكاء، استثمر في أدواتك!</b> اضغط على '💰 خطة الأسعار VIP' للاطلاع على العروض الحالية.
+🛡️ <b>ماذا يقدم لك الاشتراك VIP؟ (ميزة القوة الخارقة)</b>
+1.  <b>إشارات خماسية التأكيد (5-Tier Confirmation):</b>
+    نظامنا لا يعتمد على مؤشر واحد! بل يمرر الإشارة عبر **أربعة فلاتر تحليلية احترافية** في وقت واحد قبل الإرسال:
+    * **الفلتر 1 (EMA):** تحديد الإشارة الأولية على إطار الدقيقة.
+    * **الفلتر 2 (RSI):** تأكيد قوة الزخم واستمرارية الحركة.
+    * **الفلتر 3 (ATR):** قياس التقلب لتحديد نقاط TP/SL ديناميكيًا.
+    * **الفلتر 4 (HTF):** التأكد من توافق الإشارة مع الاتجاه الأكبر (5 دقائق) لتجنب الإشارات الكاذبة.
+    
+2.  <b>أعلى درجات الثقة:</b>
+    لا يتم إرسال أي صفقة إلا إذا تجاوزت نسبة الثقة **{int(CONFIDENCE_THRESHOLD*100)}%** (90% حالياً). هذا يعني أنك تحصل على إشارات نادرة، لكنها فائقة القوة.
+    
+3.  <b>إدارة مخاطر 1:3:</b>
+    كل صفقة جاهزة للتنفيذ بنسبة مخاطرة إلى عائد مثالية (هدف الربح = 3 أضعاف وقف الخسارة)، لضمان أن **الأرباح تفوق الخسائر دائمًا** على المدى الطويل.
+
+━━━━━━━━━━━━━━━
+💰 <b>حوّل التحليل إلى ربح. لا تدع الفرص تفوتك!</b> اضغط على '💰 خطة الأسعار VIP' للاطلاع على العروض الحالية.
 """
         await msg.reply(marketing_text)
 
@@ -707,11 +713,13 @@ async def handle_user_actions(msg: types.Message):
 
 def setup_random_schedules():
     
+    # 3 تنبيهات تحليلية يوميًا
     for _ in range(3):
         hour = random.randint(7, 21); minute = random.randint(0, 59)
         schedule_time = f"{hour:02d}:{minute:02d}"
         schedule.every().day.at(schedule_time).do(lambda: asyncio.create_task(send_analysis_alert()))
         
+    # 4 إلى 7 إشارات تداول يوميًا
     num_signals = random.randint(4, 7)
     for i in range(num_signals):
         hour = random.randint(8, 23); minute = random.randint(0, 59)
