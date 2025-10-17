@@ -19,7 +19,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
 
-# =============== تعريف حالات FSM (لحل مشكلة NameError) ===============
+# =============== تعريف حالات FSM ===============
 class AdminStates(StatesGroup):
     waiting_broadcast = State()
     waiting_trade = State()
@@ -35,7 +35,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
 TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "GC=F") 
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.85")) 
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1") # يوزر الأدمن للمراسلة
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
@@ -157,7 +157,7 @@ def get_user_vip_status(user_id):
     return "غير مشترك"
 
 def create_invite_key(admin_id, days):
-    """توليد مفتاح اشتراك جديد بعدد الأيام (مفتاح أقصر)."""
+    """توليد مفتاح اشتراك جديد بعدد الأيام."""
     key = str(uuid.uuid4()).split('-')[0] + '-' + str(uuid.uuid4()).split('-')[1]
     cursor = CONN.cursor()
     cursor.execute("INSERT INTO invite_keys (key, days, created_by) VALUES (?, ?, ?)", (key, days, admin_id))
@@ -165,7 +165,7 @@ def create_invite_key(admin_id, days):
     return key
 
 
-# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) ===============
+# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) - تم التعديل لضمان عمل /start ===============
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
         self, handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -175,39 +175,49 @@ class AccessMiddleware(BaseMiddleware):
         if user is None: return await handler(event, data)
         user_id = user.id
         
+        # 1. السماح للأدمن بالمرور دائمًا
         if user_id == ADMIN_ID: return await handler(event, data)
 
+        # 2. السماح بمرور /start دائمًا (للتسجيل)
+        if isinstance(event, types.Message) and (event.text == '/start' or event.text.startswith('/start ')):
+             # هذا يضمن وصول المستخدمين الجدد إلى cmd_start للتسجيل وإظهار القائمة
+             return await handler(event, data) 
+             
+        # 3. بعد /start: فحص الحظر لجميع الأزرار الأخرى 
+        allowed_for_banned = ["💬 تواصل مع الدعم", "💰 خطة الأسعار VIP", "ℹ️ عن AlphaTradeAI"]
         if is_banned(user_id):
-            if isinstance(event, types.Message):
-                await event.answer("🚫 حسابك محظور من استخدام البوت.", reply_markup=types.ReplyKeyboardRemove())
-            return 
+            if isinstance(event, types.Message) and event.text not in allowed_for_banned:
+                 await event.answer("🚫 حسابك محظور من استخدام البوت. يمكنك التواصل مع الدعم أو التحقق من الأسعار/المعلومات فقط.")
+                 return
+            
+        # 4. الأزرار المسموح بها للمستخدم العادي (حتى لو لم يكن VIP، ولكن VIP فقط يستفيد منها)
+        allowed_for_all = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك", "💰 خطة الأسعار VIP"]
         
-        allowed_texts = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك"]
-        if isinstance(event, types.Message) and (event.text == '/start' or event.text in allowed_texts or event.text.startswith('/start ')):
-             return await handler(event, data)
+        if isinstance(event, types.Message) and event.text in allowed_for_all:
+             return await handler(event, data) 
 
+        # 5. منع الوصول للصفقات أو المميزات الأخرى إذا لم يكن VIP 
         if not is_user_vip(user_id):
             if isinstance(event, types.Message):
                 await event.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط. يرجى تفعيل مفتاح اشتراك لتتمكن من استخدامها.")
             return
 
+        # 6. السماح بمرور أي شيء آخر للمشتركين VIP (مثل سعر السوق، جدول اليوم، التحليل الفوري)
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل الذكي (تم تصحيح خطأ الفترة الزمنية) ===============
+# =============== وظائف التداول والتحليل الذكي (تم تصحيح مشكلة Series) ===============
 
 def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float]:
     """
     تحليل ذكي (تقاطع EMA) وحساب نسبة الثقة، وتحديد Entry/TP/SL.
-    يعود بـ: (رسالة السعر (عربي), نسبة الثقة, نوع الصفقة, سعر الدخول, وقف الخسارة, الهدف)
     """
     try:
-        # 🟢 تصحيح الخطأ: تم تغيير period="60m" إلى period="1d" وإضافة auto_adjust=True
         data = yf.download(
             symbol, 
-            period="1d",         # فترة صالحة (يوم واحد)
-            interval="1m",       # دقة الشمعة (دقيقة واحدة)
+            period="1d",         
+            interval="1m",       
             progress=False,
-            auto_adjust=True     # لتجنب التحذير
+            auto_adjust=True     
         )
         
         if data.empty or len(data) < 30:
@@ -216,7 +226,8 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         data['EMA_5'] = data['Close'].ewm(span=5, adjust=False).mean()
         data['EMA_20'] = data['Close'].ewm(span=20, adjust=False).mean()
         
-        latest_price = data['Close'].iloc[-1]
+        # 🟢 الحل: استخدام .item() لضمان الحصول على قيمة رقمية واحدة (float)
+        latest_price = data['Close'].iloc[-1].item() 
         latest_time = data.index[-1].strftime('%Y-%m-%d %H:%M:%S')
         
         ema_fast_prev = data['EMA_5'].iloc[-2]
@@ -336,7 +347,7 @@ def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="📝 حالة الاشتراك")],
-            [KeyboardButton(text="🔗 تفعيل مفتاح الاشتراك"), KeyboardButton(text="📊 جدول اليوم")],
+            [KeyboardButton(text="🔗 تفعيل مفتاح الاشتراك"), KeyboardButton(text="💰 خطة الأسعار VIP")],
             [KeyboardButton(text="💬 تواصل مع الدعم"), KeyboardButton(text="ℹ️ عن AlphaTradeAI")]
         ],
         resize_keyboard=True
@@ -353,14 +364,15 @@ def admin_menu():
         resize_keyboard=True
     )
 
-# =============== أوامر الأدمن والمستخدم (تم تعديل الرسالة التسويقية) ===============
+# =============== أوامر الأدمن والمستخدم ===============
 
 @dp.message(Command("start"))
 async def cmd_start(msg: types.Message):
     user_id = msg.from_user.id
     username = msg.from_user.username or "مستخدم"
     
-    add_user(user_id, username)
+    # أهم خطوة: إضافة المستخدم الجديد في كل مرة يرسل /start
+    add_user(user_id, username) 
 
     welcome_msg = f"""
 🤖 <b>مرحبًا بك في AlphaTradeAI!</b>
@@ -378,7 +390,9 @@ async def admin_panel(msg: types.Message):
 
 @dp.message(F.text == "تحليل فوري ⚡️")
 async def analyze_market_now(msg: types.Message):
-    if msg.from_user.id != ADMIN_ID: return
+    if msg.from_user.id != ADMIN_ID: 
+        # هذا الزر سيعمل فقط لـ VIP، لكن Middleware يمنع غير VIP، لذلك نحتاج فقط للتأكد من الأدمن
+        if not is_user_vip(msg.from_user.id): return
     
     await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
     
@@ -398,12 +412,13 @@ async def analyze_market_now(msg: types.Message):
 
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
-    # استخدام الدالة مع استخلاص رسالة السعر فقط
+    # هذا الزر يعمل فقط لـ VIP (يتم التحقق منه في Middleware)
     price_info_msg, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
     await msg.reply(price_info_msg)
 
 @dp.message(F.text == "📊 جدول اليوم")
 async def get_current_signal(msg: types.Message):
+    # هذا الزر يعمل فقط لـ VIP (يتم التحقق منه في Middleware)
     await msg.reply("🗓️ يتم تحليل السوق حاليًا. ستصلك الصفقات المجدولة تلقائيًا إذا توفرت.")
 
 @dp.message(F.text == "📝 حالة الاشتراك")
@@ -413,6 +428,37 @@ async def show_subscription_status(msg: types.Message):
         await msg.reply(f"⚠️ أنت حالياً **غير مشترك** في خدمة VIP.\nللاشتراك، اطلب مفتاح تفعيل من الأدمن (@{ADMIN_USERNAME}) ثم اضغط '🔗 تفعيل مفتاح الاشتراك'.")
     else:
         await msg.reply(f"✅ أنت مشترك في خدمة VIP.\nتنتهي صلاحية اشتراكك في: <b>{status}</b>.")
+
+@dp.message(F.text == "💰 خطة الأسعار VIP")
+async def show_pricing_plan(msg: types.Message):
+    pricing_message = f"""
+🌟 <b>مفتاحك للنجاح يبدأ هنا!</b> 🔑
+
+خدمة AlphaTradeAI تقدم لك تحليل الذهب الأوتوماتيكي بأفضل قيمة. اختر الخطة التي تناسب أهدافك:
+
+━━━━━━━━━━━━━━━
+🥇 <b>الخطة الأساسية (تجربة ممتازة)</b>
+* <b>المدة:</b> 7 أيام
+* <b>السعر:</b> 💰 <b>$15 فقط</b>
+
+🥈 <b>الخطة الفضية (الأكثر شيوعاً)</b>
+* <b>المدة:</b> 45 يومًا (شهر ونصف)
+* <b>السعر:</b> 💰 <b>$49 فقط</b>
+
+🥉 <b>الخطة الذهبية (صفقة التوفير)</b>
+* <b>المدة:</b> 120 يومًا (4 أشهر)
+* <b>السعر:</b> 💰 <b>$99 فقط</b>
+
+💎 <b>الخطة البلاتينية (للمتداول الجاد)</b>
+* <b>المدة:</b> 200 يوم (أكثر من 6 أشهر)
+* <b>السعر:</b> 💰 <b>$149 فقط</b>
+
+━━━━━━━━━━━━━━━
+🛒 **للاشتراك وتفعيل المفتاح:**
+يرجى التواصل مباشرة مع الأدمن: 
+👤 <b>@{ADMIN_USERNAME}</b>
+"""
+    await msg.reply(pricing_message)
         
 @dp.message(F.text == "🔗 تفعيل مفتاح الاشتراك")
 async def handle_invite_key(msg: types.Message, state: FSMContext):
@@ -433,7 +479,7 @@ async def process_key_activation(msg: types.Message, state: FSMContext):
         
     await state.clear()
     
-# --- دوال الأدمن الأخرى (إنشاء المفتاح، الحظر، البث) ---
+# --- دوال الأدمن الأخرى ---
 
 @dp.message(F.text == "🔑 إنشاء مفتاح اشتراك")
 async def create_key_start(msg: types.Message, state: FSMContext):
@@ -563,16 +609,14 @@ async def handle_user_actions(msg: types.Message):
 ━━━━━━━━━━━━━━━
 ✨ <b>ماذا يقدم لك الاشتراك VIP؟</b>
 1.  <b>الإشارات فائقة الدقة (High-Confidence):</b>
-    نظامنا يراقب حركة الذهب (XAUUSD) على مدار الساعة. نستخدم نموذج تقاطع المؤشرات الأُسيَّة (EMA) الذكي لفلترة الإشارات واختيار فقط الصفقات التي تتجاوز نسبة ثقة <b>{int(CONFIDENCE_THRESHOLD*100)}%</b>. هذا يعني صفقات أقل، ولكن بجودة أعلى بكثير.
+    نظامنا يراقب حركة الذهب (XAUUSD) على مدار الساعة. نستخدم نموذج تقاطع المؤشرات الأُسيَّة (EMA) الذكي لفلترة الإشارات واختيار فقط الصفقات التي تتجاوز نسبة ثقة <b>{int(CONFIDENCE_THRESHOLD*100)}%</b>.
 2.  <b>إدارة مخاطر احترافية:</b>
-    كل إشارة تُرسَل إليك هي صفقة جاهزة للتنفيذ. تحصل على سعر الدخول (Entry Price)، هدف الربح (Take Profit - TP) ونقطة وقف الخسارة (Stop Loss - SL) لحماية رأس مالك. <b>لا تخمين، فقط خطة واضحة.</b>
+    كل إشارة تُرسَل إليك هي صفقة جاهزة للتنفيذ. تحصل على سعر الدخول (Entry Price)، هدف الربح (TP) ونقطة وقف الخسارة (SL).
 3.  <b>توفير الوقت والجهد:</b>
-    انسَ قضاء ساعات أمام الشاشة. سيتولى AlphaTradeAI التحليل المعقد وإرسال ما بين <b>4 إلى 7 صفقات</b> مجدولة يومياً، بالإضافة إلى الإشارات الفورية.
-4.  <b>بناء محفظتك بذكاء:</b>
-    أسعار اشتراكاتنا حالياً **مخفضة جداً** لجذب المستخدمين الأوائل! استغل الفرصة للانضمام بأقل تكلفة.
+    سيتولى AlphaTradeAI التحليل المعقد وإرسال ما بين <b>4 إلى 7 صفقات</b> مجدولة يومياً.
 
 ━━━━━━━━━━━━━━━
-💰 <b>لتحقيق الأرباح بذكاء، استثمر في أدواتك!</b> اضغط على '🔗 تفعيل مفتاح الاشتراك' وابدأ فوراً.
+💰 <b>لتحقيق الأرباح بذكاء، استثمر في أدواتك!</b> اضغط على '💰 خطة الأسعار VIP' للاطلاع على العروض الحالية.
 """
         await msg.reply(marketing_text)
 
@@ -588,7 +632,7 @@ def setup_random_schedules():
         minute = random.randint(0, 59)
         schedule_time = f"{hour:02d}:{minute:02d}"
         schedule.every().day.at(schedule_time).do(lambda: asyncio.create_task(send_analysis_alert()))
-        print(f"Alert scheduled at {schedule_time}")
+        # print(f"Alert scheduled at {schedule_time}")
         
     # 2. جدولة صفقات التحليل (4-7 مرات في اليوم)
     num_signals = random.randint(4, 7)
@@ -597,10 +641,11 @@ def setup_random_schedules():
         minute = random.randint(0, 59)
         schedule_time = f"{hour:02d}:{minute:02d}"
         schedule.every().day.at(schedule_time).do(lambda: asyncio.create_task(send_trade_signal(admin_triggered=False)))
-        print(f"Trade signal scheduled at {schedule_time}")
+        # print(f"Trade signal scheduled at {schedule_time}")
 
 async def scheduler_runner():
     """تشغيل المهام المجدولة بشكل غير متزامن."""
+    # يجب أن تتصل هذه الدالة بعد تشغيل البوت لأول مرة في اليوم
     setup_random_schedules() 
     print("✅ تم إعداد جدول الصفقات العشوائية لليوم.")
     
