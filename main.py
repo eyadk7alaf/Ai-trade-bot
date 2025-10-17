@@ -1,7 +1,6 @@
 import asyncio
 import time
 import os
-# تم استبدال sqlite3 بـ psycopg2 للاتصال بقاعدة بيانات Railway PostgreSQL
 import psycopg2
 import pandas as pd
 import yfinance as yf
@@ -86,6 +85,7 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+    print("✅ تم تهيئة جداول قاعدة البيانات (PostgreSQL) بنجاح.")
 
 def add_user(user_id, username):
     conn = get_db_connection()
@@ -142,21 +142,28 @@ def is_user_vip(user_id):
     conn.close()
     return result is not None and result[0] > time.time()
     
+# تم تعديل هذه الدالة لحل خطأ 'NoneType' الذي ظهر لك
 def activate_key(user_id, key):
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
+        # 1. التأكد من وجود المفتاح وعدم استخدامه
         cursor.execute("SELECT days FROM invite_keys WHERE key = %s AND used_by IS NULL", (key,))
         key_data = cursor.fetchone()
 
         if key_data:
             days = key_data[0]
             
+            # 2. تحديث المفتاح
             cursor.execute("UPDATE invite_keys SET used_by = %s, used_at = %s WHERE key = %s", (user_id, time.time(), key))
             
+            # 3. جلب حالة VIP الحالية للمستخدم بأمان
             cursor.execute("SELECT vip_until FROM users WHERE user_id = %s", (user_id,))
-            vip_until_ts = cursor.fetchone()[0]
+            user_data = cursor.fetchone() 
+            
+            # إذا لم يجد بيانات (None), نعتبر نهاية الاشتراك صفر (غير مشترك)
+            vip_until_ts = user_data[0] if user_data else 0.0 
             
             if vip_until_ts > time.time():
                 start_date = datetime.fromtimestamp(vip_until_ts)
@@ -165,7 +172,11 @@ def activate_key(user_id, key):
                 
             new_vip_until = start_date + timedelta(days=days)
             
-            cursor.execute("UPDATE users SET vip_until = %s WHERE user_id = %s", (new_vip_until.timestamp(), user_id))
+            # 4. تحديث أو إدخال حالة المستخدم (ضمان التسجيل)
+            cursor.execute("""
+                INSERT INTO users (user_id, vip_until) VALUES (%s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET vip_until = %s
+            """, (user_id, new_vip_until.timestamp(), new_vip_until.timestamp()))
             
             conn.commit()
             return True, days, new_vip_until
@@ -194,7 +205,7 @@ def create_invite_key(admin_id, days):
     return key
 
 
-# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) - الحل الجذري ===============
+# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) - حل استقرار التسجيل ===============
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
         self, handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -214,7 +225,6 @@ class AccessMiddleware(BaseMiddleware):
 
         # 2. السماح بمرور /start دائمًا (للجميع)
         if isinstance(event, types.Message) and (event.text == '/start' or event.text.startswith('/start ')):
-             # تم تسجيل المستخدم بالفعل، والسماح بالمرور لإظهار القائمة
              return await handler(event, data) 
              
         # 3. فحص الحظر (لجميع الرسائل الأخرى)
@@ -239,7 +249,7 @@ class AccessMiddleware(BaseMiddleware):
         # 6. السماح بمرور أي شيء آخر للمشتركين VIP
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل الذكي (تم تصحيح مشكلة Series) ===============
+# =============== وظائف التداول والتحليل الذكي ===============
 
 def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float]:
     """
@@ -655,12 +665,13 @@ async def scheduler_runner():
 
 async def main():
     # 1. تهيئة قاعدة البيانات (PostgreSQL)
+    print("⏳ جارٍ تهيئة قاعدة بيانات PostgreSQL...")
     init_db()
     
     # 2. تسجيل الـ Middleware
     dp.update.outer_middleware(AccessMiddleware())
     
-    print("✅ Bot is running and ready for polling.")
+    print("✅ البوت قيد التشغيل وجاهز لاستقبال التحديثات.")
     print(f"👤 Admin ID: {ADMIN_ID} | Trade Symbol: {TRADE_SYMBOL}")
     
     # 3. تشغيل البوت وحلقة الجدولة في نفس الوقت
