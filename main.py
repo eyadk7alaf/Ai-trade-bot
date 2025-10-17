@@ -1,7 +1,8 @@
 import asyncio
 import time
 import os
-import sqlite3
+# تم استبدال sqlite3 بـ psycopg2 للاتصال بقاعدة بيانات Railway PostgreSQL
+import psycopg2
 import pandas as pd
 import yfinance as yf
 import schedule
@@ -9,6 +10,7 @@ import random
 import uuid
 
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.filters import Command
@@ -19,7 +21,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
 
-# =============== تعريف حالات FSM (لضمان تعريفها قبل استخدامها) ===============
+# =============== تعريف حالات FSM ===============
 class AdminStates(StatesGroup):
     waiting_broadcast = State()
     waiting_trade = State()
@@ -35,7 +37,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
 TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "GC=F") 
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.85")) 
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1") # يوزر الأدمن للمراسلة
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
@@ -51,123 +53,144 @@ bot = Bot(token=BOT_TOKEN,
           
 dp = Dispatcher(storage=MemoryStorage())
 
-# =============== قاعدة بيانات SQLite - نظام الاشتراكات ===============
-DB_NAME = 'alpha_trade_ai.db'
-CONN = None
+# =============== قاعدة بيانات PostgreSQL (الحل الجذري للمشكلة) ===============
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("🚫 لم يتم العثور على DATABASE_URL. يرجى التأكد من ربط PostgreSQL بـ Railway.")
 
-def init_db():
-    global CONN
-    # استخدام check_same_thread=False ضروري لبيئات التشغيل غير المتزامنة مثل aiogram
-    CONN = sqlite3.connect(DB_NAME, check_same_thread=False) 
-    cursor = CONN.cursor()
-    
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            joined_at REAL,
-            is_banned INTEGER DEFAULT 0,
-            vip_until REAL DEFAULT 0.0
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS invite_keys (
-            key TEXT PRIMARY KEY,
-            days INTEGER,
-            created_by INTEGER,
-            used_by INTEGER NULL,
-            used_at REAL NULL
-        )
-    """)
-    CONN.commit()
+def get_db_connection():
+    # إنشاء اتصال جديد لكل طلب لضمان الأمان في البيئات غير المتزامنة
+    return psycopg2.connect(DATABASE_URL)
 
 # دوال CRUD أساسية
-def add_user(user_id, username):
-    cursor = CONN.cursor()
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # يجب أن تكون كل الأوامر في عملية واحدة (Transactional)
     cursor.execute("""
-        INSERT OR IGNORE INTO users (user_id, username, joined_at) 
-        VALUES (?, ?, ?)
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            username VARCHAR(255),
+            joined_at DOUBLE PRECISION,
+            is_banned INTEGER DEFAULT 0,
+            vip_until DOUBLE PRECISION DEFAULT 0.0
+        );
+        CREATE TABLE IF NOT EXISTS invite_keys (
+            key VARCHAR(255) PRIMARY KEY,
+            days INTEGER,
+            created_by BIGINT,
+            used_by BIGINT NULL,
+            used_at DOUBLE PRECISION NULL
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+def add_user(user_id, username):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    # ON CONFLICT DO NOTHING يكافئ INSERT OR IGNORE
+    cursor.execute("""
+        INSERT INTO users (user_id, username, joined_at) 
+        VALUES (%s, %s, %s)
+        ON CONFLICT (user_id) DO NOTHING
     """, (user_id, username, time.time()))
-    CONN.commit()
+    conn.commit()
+    conn.close()
 
 def is_banned(user_id):
-    cursor = CONN.cursor()
-    cursor.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_banned FROM users WHERE user_id = %s", (user_id,))
     result = cursor.fetchone()
-    # إذا لم يكن المستخدم موجودًا، لا تعتبره محظورًا
-    return result is not None and result[0] == 1 
-
-# ... (بقية دوال DB: update_ban_status, get_all_users_ids, get_total_users, is_user_vip, activate_key, get_user_vip_status, create_invite_key)
-# ملاحظة: تم حذف بقية دوال DB لتجنب التكرار، لكن يجب أن تكون موجودة في الكود الكامل.
+    conn.close()
+    return result is not None and result[0] == 1
 
 def update_ban_status(user_id, status):
-    cursor = CONN.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    cursor.execute("UPDATE users SET is_banned = ? WHERE user_id = ?", (status, user_id))
-    CONN.commit()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO users (user_id, is_banned) VALUES (%s, %s)
+        ON CONFLICT (user_id) DO UPDATE SET is_banned = %s
+    """, (user_id, status, status))
+    conn.commit()
+    conn.close()
     
 def get_all_users_ids():
-    cursor = CONN.cursor()
+    conn = get_db_connection()
+    cursor = conn.cursor()
     cursor.execute("SELECT user_id, is_banned FROM users")
-    return cursor.fetchall()
+    result = cursor.fetchall()
+    conn.close()
+    return result
     
 def get_total_users():
-    cursor = CONN.cursor()
+    conn = get_db_connection()
+    cursor = conn.cursor()
     cursor.execute("SELECT COUNT(user_id) FROM users") 
-    return cursor.fetchone()[0]
+    result = cursor.fetchone()[0]
+    conn.close()
+    return result
 
 # دوال الاشتراكات
 def is_user_vip(user_id):
-    cursor = CONN.cursor()
-    cursor.execute("SELECT vip_until FROM users WHERE user_id = ?", (user_id,))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT vip_until FROM users WHERE user_id = %s", (user_id,))
     result = cursor.fetchone()
-    if result is None: return False
-    return result[0] > time.time()
+    conn.close()
+    return result is not None and result[0] > time.time()
     
 def activate_key(user_id, key):
-    cursor = CONN.cursor()
-    cursor.execute("SELECT days FROM invite_keys WHERE key = ? AND used_by IS NULL", (key,))
-    key_data = cursor.fetchone()
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-    if key_data:
-        days = key_data[0]
-        cursor.execute("UPDATE invite_keys SET used_by = ?, used_at = ? WHERE key = ?", (user_id, time.time(), key))
-        
-        cursor.execute("SELECT vip_until FROM users WHERE user_id = ?", (user_id,))
-        # يتم التأكد هنا أن المستخدم موجود بالفعل في جدول users قبل جلب vip_until
-        user_data = cursor.fetchone()
-        if user_data is None: 
-            return False, 0, None # فشل، يجب أن يكون قد تم إضافته بالفعل عبر Middleware
+    try:
+        cursor.execute("SELECT days FROM invite_keys WHERE key = %s AND used_by IS NULL", (key,))
+        key_data = cursor.fetchone()
 
-        vip_until_ts = user_data[0]
-        
-        if vip_until_ts > time.time():
-            start_date = datetime.fromtimestamp(vip_until_ts)
-        else:
-            start_date = datetime.now()
+        if key_data:
+            days = key_data[0]
             
-        new_vip_until = start_date + timedelta(days=days)
+            cursor.execute("UPDATE invite_keys SET used_by = %s, used_at = %s WHERE key = %s", (user_id, time.time(), key))
+            
+            cursor.execute("SELECT vip_until FROM users WHERE user_id = %s", (user_id,))
+            vip_until_ts = cursor.fetchone()[0]
+            
+            if vip_until_ts > time.time():
+                start_date = datetime.fromtimestamp(vip_until_ts)
+            else:
+                start_date = datetime.now()
+                
+            new_vip_until = start_date + timedelta(days=days)
+            
+            cursor.execute("UPDATE users SET vip_until = %s WHERE user_id = %s", (new_vip_until.timestamp(), user_id))
+            
+            conn.commit()
+            return True, days, new_vip_until
         
-        cursor.execute("UPDATE users SET vip_until = ? WHERE user_id = ?", (new_vip_until.timestamp(), user_id))
-        
-        CONN.commit()
-        return True, days, new_vip_until
-    
-    return False, 0, None
+        return False, 0, None
+    finally:
+        conn.close()
 
 def get_user_vip_status(user_id):
-    cursor = CONN.cursor()
-    cursor.execute("SELECT vip_until FROM users WHERE user_id = ?", (user_id,))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT vip_until FROM users WHERE user_id = %s", (user_id,))
     result = cursor.fetchone()
+    conn.close()
     if result and result[0] > time.time():
         return datetime.fromtimestamp(result[0]).strftime("%Y-%m-%d %H:%M")
     return "غير مشترك"
 
 def create_invite_key(admin_id, days):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     key = str(uuid.uuid4()).split('-')[0] + '-' + str(uuid.uuid4()).split('-')[1]
-    cursor = CONN.cursor()
-    cursor.execute("INSERT INTO invite_keys (key, days, created_by) VALUES (?, ?, ?)", (key, days, admin_id))
-    CONN.commit()
+    cursor.execute("INSERT INTO invite_keys (key, days, created_by) VALUES (%s, %s, %s)", (key, days, admin_id))
+    conn.commit()
+    conn.close()
     return key
 
 
@@ -182,8 +205,7 @@ class AccessMiddleware(BaseMiddleware):
         user_id = user.id
         username = user.username or "مستخدم"
         
-        # 🚨 الإضافة الجبرية في بداية المعالجة
-        # هذا يضمن أن المستخدم موجود في DB قبل أي فحص أو محاولة للجلب.
+        # 🚨 الإضافة الجبرية في بداية المعالجة لضمان التسجيل الفوري
         if isinstance(event, types.Message):
             add_user(user_id, username) 
 
@@ -192,7 +214,7 @@ class AccessMiddleware(BaseMiddleware):
 
         # 2. السماح بمرور /start دائمًا (للجميع)
         if isinstance(event, types.Message) and (event.text == '/start' or event.text.startswith('/start ')):
-             # تم تسجيل المستخدم، والسماح بالمرور لـ cmd_start لإظهار القائمة
+             # تم تسجيل المستخدم بالفعل، والسماح بالمرور لإظهار القائمة
              return await handler(event, data) 
              
         # 3. فحص الحظر (لجميع الرسائل الأخرى)
@@ -220,6 +242,9 @@ class AccessMiddleware(BaseMiddleware):
 # =============== وظائف التداول والتحليل الذكي (تم تصحيح مشكلة Series) ===============
 
 def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float]:
+    """
+    تحليل ذكي (تقاطع EMA) وحساب نسبة الثقة، وتحديد Entry/TP/SL.
+    """
     try:
         data = yf.download(
             symbol, 
@@ -359,12 +384,7 @@ def admin_menu():
 
 @dp.message(Command("start"))
 async def cmd_start(msg: types.Message):
-    user_id = msg.from_user.id
-    username = msg.from_user.username or "مستخدم"
-    
-    # تمت إضافة المستخدم في الـ Middleware، هنا يتم إظهار القائمة فقط
-    # add_user(user_id, username) # تم حذف هذا السطر لأنه أصبح في الـ Middleware
-
+    # تم تسجيل المستخدم في الـ Middleware، هنا يتم إظهار القائمة فقط
     welcome_msg = f"""
 🤖 <b>مرحبًا بك في AlphaTradeAI!</b>
 🚀 نظام ذكي يتابع سوق الذهب ({TRADE_SYMBOL}).
@@ -466,7 +486,6 @@ async def process_key_activation(msg: types.Message, state: FSMContext):
         
     await state.clear()
     
-# --- دوال الأدمن الأخرى (تم حذفها لتجنب التكرار - لكن يجب أن تكون موجودة في الكود النهائي) ---
 @dp.message(F.text == "🔑 إنشاء مفتاح اشتراك")
 async def create_key_start(msg: types.Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
@@ -487,7 +506,6 @@ async def process_key_days(msg: types.Message, state: FSMContext):
         await state.clear()
         await msg.answer("🎛️ العودة إلى لوحة الأدمن.", reply_markup=admin_menu())
 
-# ... (بقية دوال الأدمن: البث، الحظر، إلغاء الحظر، عرض المشتركين، عدد المستخدمين، العودة للقائمة)
 @dp.message(F.text == "📢 رسالة لكل المستخدمين")
 async def send_broadcast_start(msg: types.Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
@@ -556,9 +574,11 @@ async def process_unban(msg: types.Message, state: FSMContext):
 @dp.message(F.text == "🗒️ عرض حالة المشتركين")
 async def show_active_users(msg: types.Message):
     if msg.from_user.id != ADMIN_ID: return
-    cursor = CONN.cursor()
-    cursor.execute("SELECT user_id, vip_until, username FROM users WHERE vip_until > ?", (time.time(),))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, vip_until, username FROM users WHERE vip_until > %s", (time.time(),))
     active_users = cursor.fetchall()
+    conn.close()
     
     if not active_users:
         await msg.reply("لا يوجد مشتركين فعالين حالياً.")
@@ -634,7 +654,7 @@ async def scheduler_runner():
         await asyncio.sleep(1) 
 
 async def main():
-    # 1. تهيئة قاعدة البيانات (ملاحظة check_same_thread=False في init_db)
+    # 1. تهيئة قاعدة البيانات (PostgreSQL)
     init_db()
     
     # 2. تسجيل الـ Middleware
