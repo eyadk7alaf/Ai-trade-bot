@@ -8,17 +8,19 @@ import schedule
 
 from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.filters import Command
-# تم استبدال Message, TelegramObject باستيراد شامل لـ types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
+# تم إضافة الاستيراد الصحيح لـ DefaultBotProperties
+from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
 
 # =============== إعداد البوت والمتغيرات ===============
+# نعتمد على المتغيرات البيئية (Environment Variables)
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
-TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "AAPL") 
+ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") # يجب تعيين قيمة الادمن في Railway
+TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "AAPL") # يمكن تغييره في Railway
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
@@ -27,17 +29,22 @@ except ValueError:
     ADMIN_ID = 0 
 
 if not BOT_TOKEN:
-    raise ValueError("🚫 لم يتم العثور على متغير البيئة TELEGRAM_BOT_TOKEN.")
+    raise ValueError("🚫 لم يتم العثور على متغير البيئة TELEGRAM_BOT_TOKEN. يرجى ضبطه.")
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+# ✅ الإصلاح: استخدام default=DefaultBotProperties لتحديد parse_mode
+bot = Bot(token=BOT_TOKEN, 
+          default=DefaultBotProperties(parse_mode="HTML")) 
+          
 dp = Dispatcher(storage=MemoryStorage())
 
-# =============== قاعدة بيانات SQLite الدائمة (بدون تغيير) ===============
+# =============== قاعدة بيانات SQLite الدائمة ===============
 DB_NAME = 'alpha_trade_ai.db'
 CONN = None
 
 def init_db():
+    """تهيئة قاعدة البيانات وإنشاء الجداول."""
     global CONN
+    # يتم فتح الاتصال في كل عملية تشغيل على Railway
     CONN = sqlite3.connect(DB_NAME)
     cursor = CONN.cursor()
     cursor.execute("""
@@ -51,6 +58,7 @@ def init_db():
     CONN.commit()
 
 def add_user(user_id, username):
+    """إضافة مستخدم جديد أو تحديث بياناته."""
     cursor = CONN.cursor()
     cursor.execute("""
         INSERT OR IGNORE INTO users (user_id, username, joined_at) 
@@ -59,23 +67,27 @@ def add_user(user_id, username):
     CONN.commit()
 
 def get_total_users():
+    """جلب إجمالي عدد المستخدمين."""
     cursor = CONN.cursor()
     cursor.execute("SELECT COUNT(*) FROM users")
     return cursor.fetchone()[0]
 
 def is_banned(user_id):
+    """التحقق من حالة الحظر."""
     cursor = CONN.cursor()
     cursor.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
     return result is not None and result[0] == 1
 
 def update_ban_status(user_id, status):
+    """تحديث حالة الحظر (1 للحظر، 0 لإلغاء الحظر)."""
     cursor = CONN.cursor()
     cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
     cursor.execute("UPDATE users SET is_banned = ? WHERE user_id = ?", (status, user_id))
     CONN.commit()
     
 def get_all_users_ids():
+    """جلب جميع معرفات المستخدمين وحالة الحظر."""
     cursor = CONN.cursor()
     cursor.execute("SELECT user_id, is_banned FROM users")
     return cursor.fetchall()
@@ -88,10 +100,9 @@ class BanMiddleware(BaseMiddleware):
         event: types.TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        # 1. استخدام event.event_from_user للوصول الآمن إلى المستخدم المرسل
+        # الوصول الآمن للمستخدم المرسل
         user = data.get('event_from_user')
         
-        # إذا لم يكن هناك مستخدم مرتبط بالحدث (مثل تحديث قناة)، نستمر
         if user is None:
             return await handler(event, data)
 
@@ -101,17 +112,15 @@ class BanMiddleware(BaseMiddleware):
         if user_id == ADMIN_ID:
             return await handler(event, data)
 
-        # 🚫 منع معالجة التحديث إذا كان المستخدم محظورًا
+        # منع التحديث إذا كان المستخدم محظورًا
         if is_banned(user_id):
-            # محاولة إرسال رسالة تنبيه للمستخدم المحظور فقط إذا كان الحدث رسالة
             if isinstance(event, types.Message):
                 try:
                     await event.answer("🚫 حسابك محظور من استخدام البوت.", reply_markup=types.ReplyKeyboardRemove())
                 except:
                     pass
-            return # إيقاف تمرير التحديث للمعالجات الأخرى
+            return 
 
-        # ✅ السماح بالمرور
         return await handler(event, data)
 
 
@@ -121,10 +130,11 @@ def fetch_latest_price(symbol: str) -> str:
     """جلب آخر سعر إغلاق لرمز تداول محدد."""
     try:
         ticker = yf.Ticker(symbol)
+        # جلب البيانات لأقرب شمعة (عادة 1 دقيقة)
         data = ticker.history(period="1d", interval="1m")
         
         if data.empty:
-            return "لا تتوفر بيانات حديثة."
+            return f"لا تتوفر بيانات حديثة لرمز التداول: {symbol}."
 
         latest_price = data['Close'].iloc[-1]
         latest_time = data.index[-1].strftime('%Y-%m-%d %H:%M:%S')
@@ -132,12 +142,10 @@ def fetch_latest_price(symbol: str) -> str:
         return f"📊 آخر سعر لـ <b>{symbol}</b>:\nالسعر: ${latest_price:,.2f}\nالوقت: {latest_time} UTC"
         
     except Exception as e:
-        return f"❌ فشل في جلب بيانات التداول لـ {symbol}: {e}"
+        return f"❌ فشل في جلب بيانات التداول لـ {symbol}. تأكد من صحة الرمز: {e}"
 
-# تم تعديلها لتكون دالة غير متزامنة ليتم استدعاؤها في الـ Scheduler
 async def send_daily_trade_signal():
     """وظيفة إرسال إشارة تداول مجدولة لجميع المستخدمين."""
-    # يجب أن يتم تنفيذ هذه الوظيفة في حلقة الـ asyncio
     price_info = fetch_latest_price(TRADE_SYMBOL)
     
     trade_msg = f"""
@@ -145,7 +153,7 @@ async def send_daily_trade_signal():
 ━━━━━━━━━━━━━━━
 📈 <b>رمز التداول:</b> {TRADE_SYMBOL}
 {price_info}
-💡 <b>تحليل:</b> فرصة شراء محتملة.
+💡 <b>تحليل:</b> بناءً على مؤشراتنا، هناك فرصة شراء محتملة.
 ⚠️ <b>تذكير:</b> تداول بمسؤولية.
 ━━━━━━━━━━━━━━━
 """
@@ -166,12 +174,13 @@ async def send_daily_trade_signal():
         except Exception:
             pass
 
-# =============== لوحة المستخدم/الأدمن و FSM (بدون تغيير) ===============
+# =============== لوحة المستخدم/الأدمن و FSM ===============
+# تم التأكد من صحة بناء ReplyKeyboardMarkup (حل مشكلة القائمة)
 def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton("📈 سعر السوق الحالي"), KeyboardButton("📊 جدول اليوم")],
-            [KeyboardButton("💬 تواصل مع الدعم"), KeyboardButton("ℹ️ عن AlphaTradeAI")]
+            [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="📊 جدول اليوم")],
+            [KeyboardButton(text="💬 تواصل مع الدعم"), KeyboardButton(text="ℹ️ عن AlphaTradeAI")]
         ],
         resize_keyboard=True
     )
@@ -179,9 +188,9 @@ def user_menu():
 def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton("📢 رسالة لكل المستخدمين"), KeyboardButton("💹 إرسال صفقة يدوية")],
-            [KeyboardButton("🚫 حظر مستخدم"), KeyboardButton("✅ إلغاء حظر مستخدم")],
-            [KeyboardButton("👥 عدد المستخدمين"), KeyboardButton("🔙 عودة للمستخدم")]
+            [KeyboardButton(text="📢 رسالة لكل المستخدمين"), KeyboardButton(text="💹 إرسال صفقة يدوية")],
+            [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء حظر مستخدم")],
+            [KeyboardButton(text="👥 عدد المستخدمين"), KeyboardButton(text="🔙 عودة للمستخدم")]
         ],
         resize_keyboard=True
     )
@@ -192,25 +201,29 @@ class AdminStates(StatesGroup):
     waiting_ban = State()
     waiting_unban = State()
 
-# =============== أوامر الأدمن ===============
+# =============== معالجات الرسائل والأوامر ===============
 
+@dp.message(Command("start"))
+async def cmd_start(msg: types.Message):
+    user_id = msg.from_user.id
+    username = msg.from_user.username or "مستخدم"
+    
+    add_user(user_id, username)
+
+    welcome_msg = f"""
+🤖 <b>مرحبًا بك في AlphaTradeAI!</b>
+🚀 نظام ذكي يتابع السوق ({TRADE_SYMBOL}).
+اختر من القائمة 👇
+"""
+    await msg.reply(welcome_msg, reply_markup=user_menu())
+
+# أوامر الأدمن
 @dp.message(Command("admin"))
 async def admin_panel(msg: types.Message):
     if msg.from_user.id != ADMIN_ID:
         await msg.reply("🚫 ليس لديك صلاحية الوصول إلى لوحة التحكم.")
         return
     await msg.reply("🎛️ مرحبًا بك في لوحة تحكم الأدمن!", reply_markup=admin_menu())
-
-@dp.message(F.text == "🔙 عودة للمستخدم")
-async def back_to_user_menu(msg: types.Message):
-    if msg.from_user.id == ADMIN_ID:
-        await msg.reply("👤 العودة إلى قائمة المستخدم الرئيسية.", reply_markup=user_menu())
-        
-@dp.message(F.text == "👥 عدد المستخدمين")
-async def show_user_count(msg: types.Message):
-    if msg.from_user.id == ADMIN_ID:
-        count = get_total_users()
-        await msg.reply(f"👥 عدد المستخدمين المسجلين: {count}")
 
 @dp.message(F.text == "🚫 حظر مستخدم")
 async def ban_user_start(msg: types.Message, state: FSMContext):
@@ -235,24 +248,50 @@ async def process_ban(msg: types.Message, state: FSMContext):
     await state.clear()
     await msg.answer("🎛️ العودة إلى لوحة الأدمن.", reply_markup=admin_menu())
 
-# (بقية دوال الأدمن الأخرى مثل Unban و Broadcast و Trade Manual)
-# ...
+@dp.message(F.text == "✅ إلغاء حظر مستخدم")
+async def unban_user_start(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await msg.reply("♻️ أرسل ID المستخدم لإلغاء حظره:")
+    await state.set_state(AdminStates.waiting_unban)
 
-# =============== أوامر المستخدم (تم إصلاحها لـ F.text) ===============
-@dp.message(Command("start"))
-async def cmd_start(msg: types.Message):
-    user_id = msg.from_user.id
-    username = msg.from_user.username or "مستخدم"
+@dp.message(AdminStates.waiting_unban)
+async def process_unban(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    try:
+        uid = int(msg.text)
+        update_ban_status(uid, 0) # 0 لإلغاء الحظر
+        await msg.reply(f"✅ تم إلغاء حظر المستخدم {uid} بنجاح.")
+    except Exception as e:
+        await msg.reply(f"❌ ID غير صالح أو حدث خطأ: {e}")
+    await state.clear()
+    await msg.answer("🎛️ العودة إلى لوحة الأدمن.", reply_markup=admin_menu())
+
+@dp.message(F.text == "📢 رسالة لكل المستخدمين")
+async def send_broadcast_start(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await msg.reply("📝 أرسل الرسالة التي تريد إرسالها لجميع المستخدمين:")
+    await state.set_state(AdminStates.waiting_broadcast)
+
+@dp.message(AdminStates.waiting_broadcast)
+async def process_broadcast(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    sent = 0
+    failed = 0
+    all_users = get_all_users_ids()
     
-    add_user(user_id, username)
-
-    welcome_msg = f"""
-🤖 <b>مرحبًا بك في AlphaTradeAI!</b>
-🚀 نظام ذكي يتابع السوق ({TRADE_SYMBOL}).
-اختر من القائمة 👇
-"""
-    await msg.reply(welcome_msg, reply_markup=user_menu())
-
+    for uid, is_banned_status in all_users:
+        if is_banned_status == 0: # إرسال فقط لغير المحظورين
+            try:
+                await bot.send_message(uid, msg.text)
+                sent += 1
+            except Exception:
+                failed += 1
+            
+    await msg.reply(f"✅ تم إرسال الرسالة إلى {sent} مستخدم غير محظور.\n❌ فشل الإرسال إلى {failed} مستخدم.")
+    await state.clear()
+    await msg.answer("🎛️ العودة إلى لوحة الأدمن.", reply_markup=admin_menu())
+    
+# أوامر المستخدم
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
     price_info = fetch_latest_price(TRADE_SYMBOL)
@@ -262,10 +301,9 @@ async def get_current_price(msg: types.Message):
 async def handle_user_actions(msg: types.Message):
     if msg.text == "📊 جدول اليوم":
         await msg.reply("🗓️ يتم عرض آخر إشارة تداول آلية:")
-        # تشغيل الإشارة في الـ Event Loop الحالي
         await send_daily_trade_signal() 
     elif msg.text == "💬 تواصل مع الدعم":
-        await msg.reply(f"📞 يمكنك التواصل مع الإدارة مباشرة عبر @Admin_Username (يرجى استبدالها) أو الإبلاغ عن مشكلة.")
+        await msg.reply(f"📞 يمكنك التواصل مع الإدارة مباشرة عبر @Admin_Username أو الإبلاغ عن مشكلة.")
     elif msg.text == "ℹ️ عن AlphaTradeAI":
         await msg.reply("🌟 نحن نقدم تحليلات تداول تعتمد على الذكاء الاصطناعي لمساعدتك في اتخاذ قرارات أفضل في السوق.")
 
@@ -273,24 +311,22 @@ async def handle_user_actions(msg: types.Message):
 # =============== حلقة التشغيل المجدولة (Schedule Runner) ===============
 async def scheduler_runner():
     """تشغيل المهام المجدولة بشكل غير متزامن."""
-    # مثال: جدول إرسال الإشارة كل 60 دقيقة
-    # ملاحظة: يجب أن تكون الدالة المجدولة بسيطة وتستدعي دالة async عبر asyncio.create_task
+    # جدول إرسال الإشارة كل 60 دقيقة
     schedule.every(60).minutes.do(lambda: asyncio.create_task(send_daily_trade_signal()))
     
     while True:
         try:
-            # تشغيل جميع المهام المجدولة المعلقة
             schedule.run_pending()
         except Exception as e:
             print(f"Error in scheduler: {e}")
-        await asyncio.sleep(1) # تحقق كل ثانية
+        await asyncio.sleep(1) 
 
 # =============== تشغيل البوت (Main Function) ===============
 async def main():
     # 1. تهيئة قاعدة البيانات
     init_db()
     
-    # 2. تسجيل الـ Middleware (تأكد من أنه أول ما يسجل)
+    # 2. تسجيل الـ Middleware
     dp.update.outer_middleware(BanMiddleware())
     
     print("✅ Bot is running and ready for polling.")
