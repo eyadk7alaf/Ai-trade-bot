@@ -528,10 +528,388 @@ def user_menu():
     )
 
 def admin_menu():
-    # [تعديل جديد] إضافة زر جرد الصفقات اليومي
+    # [تعديل جديد] إضافة زر جرد الصفقات اليومي - تم تصحيح الأقواس هنا
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="تحليل فوري ⚡️"), KeyboardButton(text="📊 جرد الصفقات اليومي")],
             [KeyboardButton(text="📢 رسالة لكل المستخدمين"), KeyboardButton(text="🔑 إنشاء مفتاح اشتراك")],
             [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء حظر مستخدم")],
-            [KeyboardButton(text="👥 عدد المستخدمين"), KeyboardButton(text
+            [KeyboardButton(text="👥 عدد المستخدمين"), KeyboardButton(text="🔙 عودة للمستخدم")]
+        ],
+        resize_keyboard=True
+    )
+
+# =============== أوامر الأدمن والمستخدم ===============
+
+@dp.message(Command("start"))
+async def cmd_start(msg: types.Message):
+    welcome_msg = f"""
+🤖 <b>مرحبًا بك في AlphaTradeAI!</b>
+🚀 نظام ذكي يتابع سوق الذهب ({TRADE_SYMBOL}) بأربعة فلاتر تحليلية.
+اختر من القائمة 👇
+"""
+    await msg.reply(welcome_msg, reply_markup=user_menu())
+    
+@dp.message(Command("admin"))
+async def admin_panel(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID:
+        await msg.reply("🚫 ليس لديك صلاحية الوصول إلى لوحة التحكم.")
+        return
+    await msg.reply("🎛️ مرحبًا بك في لوحة تحكم الأدمن!", reply_markup=admin_menu())
+
+@dp.message(F.text == "تحليل فوري ⚡️")
+async def analyze_market_now(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID and not is_user_vip(msg.from_user.id): 
+        await msg.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط.")
+        return
+    
+    await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
+    
+    sent_successfully = await send_trade_signal(admin_triggered=True)
+    
+    if sent_successfully:
+        await msg.answer("✅ تم إرسال صفقة VIP بنجاح إلى المشتركين.")
+    else:
+        _, confidence, action, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
+        confidence_percent = confidence * 100
+        
+        if action == "HOLD":
+             await msg.answer("💡 لا توجد إشارة واضحة (HOLD). لم يتم إرسال صفقة.")
+        else:
+             await msg.answer(f"⚠️ الإشارة موجودة ({action})، لكن نسبة الثقة {confidence_percent:.2f}% أقل من المطلوب ({int(CONFIDENCE_THRESHOLD*100)}%). لم يتم إرسال صفقة.")
+
+@dp.message(F.text == "📊 جرد الصفقات اليومي")
+async def daily_inventory_report(msg: types.Message):
+    # [تعديل جديد] معالج لزر جرد الصفقات
+    if msg.from_user.id != ADMIN_ID:
+        await msg.reply("🚫 ليس لديك صلاحية الوصول.")
+        return
+    
+    report = get_daily_trade_report()
+    await msg.reply(report, parse_mode="HTML")
+
+@dp.message(F.text == "📈 سعر السوق الحالي")
+async def get_current_price(msg: types.Message):
+    price_info_msg, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
+    await msg.reply(price_info_msg)
+
+@dp.message(F.text == "📝 حالة الاشتراك")
+async def show_subscription_status(msg: types.Message):
+    status = get_user_vip_status(msg.from_user.id)
+    if status == "غير مشترك":
+        await msg.reply(f"⚠️ أنت حالياً **غير مشترك** في خدمة VIP.\nللاشتراك، اطلب مفتاح تفعيل من الأدمن (@{ADMIN_USERNAME}) ثم اضغط '🔗 تفعيل مفتاح الاشتراك'.")
+    else:
+        await msg.reply(f"✅ أنت مشترك في خدمة VIP.\nالاشتراك ينتهي في: <b>{status}</b>.")
+
+@dp.message(F.text == "🔗 تفعيل مفتاح الاشتراك")
+async def prompt_key_activation(msg: types.Message, state: FSMContext):
+    await state.set_state(UserStates.waiting_key_activation)
+    await msg.reply("🔑 يرجى إدخال مفتاح التفعيل الآن:")
+
+@dp.message(UserStates.waiting_key_activation)
+async def process_key_activation(msg: types.Message, state: FSMContext):
+    key = msg.text.strip()
+    success, days, new_vip_until = activate_key(msg.from_user.id, key)
+    
+    await state.clear()
+    
+    if success:
+        await msg.reply(f"🎉 تم تفعيل مفتاح الاشتراك بنجاح!\n✅ تمت إضافة {days} يوم/أيام إلى اشتراكك.\nالاشتراك الجديد ينتهي في: <b>{new_vip_until.strftime('%Y-%m-%d %H:%M')}</b>.", reply_markup=user_menu())
+    else:
+        await msg.reply("❌ فشل تفعيل المفتاح. يرجى التأكد من صحة المفتاح وأنه لم يُستخدم من قبل.", reply_markup=user_menu())
+
+@dp.message(F.text == "💰 خطة الأسعار VIP")
+async def show_prices(msg: types.Message):
+    prices_msg = f"""
+💳 **خطة الأسعار VIP**
+━━━━━━━━━━━━━━━
+خدمة AlphaTradeAI تقدم إشارات تداول فائقة القوة للذهب.
+ 
+- شهر واحد: $150
+- 3 أشهر: $400 (توفير $50)
+- سنة كاملة: $1500 (توفير $300)
+
+للاشتراك، يرجى التواصل مع الأدمن (@{ADMIN_USERNAME}) للحصول على مفتاح تفعيل.
+"""
+    await msg.reply(prices_msg)
+
+@dp.message(F.text == "💬 تواصل مع الدعم")
+async def contact_support(msg: types.Message):
+    support_msg = f"""
+🤝 للدعم الفني أو الاستفسارات أو طلب مفتاح اشتراك، يرجى التواصل مباشرة مع الأدمن:
+🔗 @{ADMIN_USERNAME}
+"""
+    await msg.reply(support_msg)
+
+@dp.message(F.text == "ℹ️ عن AlphaTradeAI")
+async def about_bot(msg: types.Message):
+    about_msg = f"""
+🤖 **AlphaTradeAI** هو بوت تداول آلي متقدم متخصص في تحليل الذهب ({TRADE_SYMBOL}).
+يعتمد البوت على نظام Multi-Filter Analysis الذي يجمع بين مؤشرات:
+1. **EMA Crossover (الاتجاه)**
+2. **RSI (الزخم)**
+3. **ATR (التقلب)**
+4. **EMA 5m (تأكيد الاتجاه الأكبر)**
+
+يتم إرسال الإشارات فقط عند الوصول إلى نسبة ثقة لا تقل عن {int(CONFIDENCE_THRESHOLD*100)}% لضمان أعلى جودة.
+"""
+    await msg.reply(about_msg)
+
+@dp.message(F.text == "🔙 عودة للمستخدم")
+async def back_to_user_menu(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    await msg.reply("➡️ تم التحويل إلى قائمة المستخدمين.", reply_markup=user_menu())
+
+@dp.message(F.text == "👥 عدد المستخدمين")
+async def count_users(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    total = get_total_users()
+    await msg.reply(f"📊 إجمالي عدد المستخدمين المسجلين في قاعدة البيانات: **{total}**")
+
+@dp.message(F.text == "📢 رسالة لكل المستخدمين")
+async def prompt_broadcast(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await state.set_state(AdminStates.waiting_broadcast)
+    await msg.reply("📝 أدخل نص الرسالة المراد بثها لجميع المستخدمين (غير المحظورين):")
+
+@dp.message(AdminStates.waiting_broadcast)
+async def send_broadcast(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    
+    await state.clear()
+    
+    broadcast_text = msg.text
+    all_users = get_all_users_ids()
+    sent_count = 0
+    
+    await msg.reply("⏳ جارٍ إرسال الرسالة...")
+    
+    for uid, is_banned_status in all_users:
+        if is_banned_status == 0 and uid != ADMIN_ID: # إرسال لغير الأدمن وغير المحظورين
+            try:
+                await bot.send_message(uid, broadcast_text, parse_mode="HTML")
+                sent_count += 1
+            except Exception:
+                pass 
+                
+    await msg.reply(f"✅ تم إرسال الرسالة بنجاح إلى **{sent_count}** مستخدم غير محظور.", reply_markup=admin_menu())
+
+@dp.message(F.text == "🚫 حظر مستخدم")
+async def prompt_ban(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await state.set_state(AdminStates.waiting_ban)
+    await msg.reply("🛡️ أدخل ID المستخدم المراد حظره:")
+
+@dp.message(AdminStates.waiting_ban)
+async def process_ban(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await state.clear()
+    
+    try:
+        user_id_to_ban = int(msg.text.strip())
+        update_ban_status(user_id_to_ban, 1) # 1 للحظر
+        await msg.reply(f"✅ تم حظر المستخدم **{user_id_to_ban}** بنجاح.", reply_markup=admin_menu())
+    except ValueError:
+        await msg.reply("❌ ID المستخدم غير صحيح. يرجى إدخال رقم.", reply_markup=admin_menu())
+
+@dp.message(F.text == "✅ إلغاء حظر مستخدم")
+async def prompt_unban(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await state.set_state(AdminStates.waiting_unban)
+    await msg.reply("🔓 أدخل ID المستخدم المراد إلغاء حظره:")
+
+@dp.message(AdminStates.waiting_unban)
+async def process_unban(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await state.clear()
+    
+    try:
+        user_id_to_unban = int(msg.text.strip())
+        update_ban_status(user_id_to_unban, 0) # 0 لإلغاء الحظر
+        await msg.reply(f"✅ تم إلغاء حظر المستخدم **{user_id_to_unban}** بنجاح.", reply_markup=admin_menu())
+    except ValueError:
+        await msg.reply("❌ ID المستخدم غير صحيح. يرجى إدخال رقم.", reply_markup=admin_menu())
+
+@dp.message(F.text == "🔑 إنشاء مفتاح اشتراك")
+async def prompt_key_days(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await state.set_state(AdminStates.waiting_key_days)
+    await msg.reply("📅 أدخل عدد الأيام التي سيعطيها المفتاح (مثال: 30):")
+
+@dp.message(AdminStates.waiting_key_days)
+async def process_create_key(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    
+    try:
+        days = int(msg.text.strip())
+        if days <= 0:
+            raise ValueError
+            
+        key = create_invite_key(msg.from_user.id, days)
+        
+        await state.clear()
+        
+        key_msg = f"""
+🎉 تم إنشاء مفتاح تفعيل جديد!
+━━━━━━━━━━━━━━━
+**المفتاح:** <code>{key}</code>
+**عدد الأيام:** {days} يوم
+"""
+        await msg.reply(key_msg, parse_mode="HTML", reply_markup=admin_menu())
+        
+    except ValueError:
+        await msg.reply("❌ عدد الأيام غير صحيح. يرجى إدخال رقم صحيح وموجب.", reply_markup=admin_menu())
+
+
+@dp.message(F.text == "🗒️ عرض حالة المشتركين")
+async def display_user_status(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID: return
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, is_banned, vip_until FROM users ORDER BY vip_until DESC LIMIT 20")
+    users = cursor.fetchall()
+    conn.close()
+    
+    if not users:
+        await msg.reply("لا يوجد مستخدمون مسجلون حالياً.")
+        return
+
+    report = "📋 **تقرير حالة آخر 20 مستخدماً**\n\n"
+    
+    for user_id, username, is_banned, vip_until in users:
+        ban_status = "❌ محظور" if is_banned == 1 else "✅ نشط"
+        
+        if vip_until is not None and vip_until > time.time():
+            vip_status = f"⭐️ VIP (حتى: {datetime.fromtimestamp(vip_until).strftime('%Y-%m-%d')})"
+        else:
+            vip_status = "🔸 مجاني/انتهى"
+            
+        report += f"👤 ID: {user_id}\n"
+        report += f"  - اليوزر: @{username if username else 'لا يوجد'}\n"
+        report += f"  - الحالة: {ban_status} / {vip_status}\n\n"
+        
+    await msg.reply(report, parse_mode="HTML")
+
+
+# ===============================================
+# === دالة متابعة الصفقات (Trade Monitoring) ===
+# ===============================================
+
+async def check_open_trades():
+    """
+    مهمة غير متزامنة تعمل بشكل دوري لمتابعة الصفقات النشطة وإغلاقها عند تحقق الشروط.
+    """
+    print(f"⏰ بدء فحص الصفقات المفتوحة...")
+    
+    active_trades = get_active_trades()
+    
+    if not active_trades:
+        print("✅ لا توجد صفقات نشطة حالياً.")
+        return
+
+    # 1. جلب السعر الحالي للسوق (مرة واحدة)
+    try:
+        data = yf.download(TRADE_SYMBOL, period="1m", interval="1m", progress=False, auto_adjust=True)
+        current_price = data['Close'].iloc[-1].item()
+    except Exception as e:
+        print(f"❌ فشل في جلب سعر السوق الحالي: {e}")
+        return
+
+    closed_count = 0
+    
+    # 2. المرور على كل صفقة نشطة
+    for trade in active_trades:
+        trade_id = trade['trade_id']
+        action = trade['action']
+        tp = trade['take_profit']
+        sl = trade['stop_loss']
+        
+        exit_status = None
+        close_price = None
+        
+        if action == "BUY":
+            # حالة ضرب الهدف
+            if current_price >= tp:
+                exit_status = "HIT_TP"
+                close_price = tp
+            # حالة ضرب الوقف
+            elif current_price <= sl:
+                exit_status = "HIT_SL"
+                close_price = sl
+        
+        elif action == "SELL":
+            # حالة ضرب الهدف
+            if current_price <= tp:
+                exit_status = "HIT_TP"
+                close_price = tp
+            # حالة ضرب الوقف
+            elif current_price >= sl:
+                exit_status = "HIT_SL"
+                close_price = sl
+
+        # 3. إذا تم إغلاق الصفقة، قم بالتحديث والإشعار
+        if exit_status:
+            update_trade_status(trade_id, exit_status, close_price)
+            closed_count += 1
+            
+            result_emoji = "🏆🎉" if exit_status == "HIT_TP" else "🛑"
+            
+            close_msg = f"""
+{result_emoji} <b>TRADE CLOSED!</b> {result_emoji}
+━━━━━━━━━━━━━━━
+📈 **PAIR:** XAUUSD
+➡️ **ACTION:** {action}
+🔒 **RESULT:** تم الإغلاق عند **{exit_status.replace('HIT_', '')}**!
+💰 **PRICE:** ${close_price:,.2f}
+"""
+            # إرسال إلى جميع المستخدمين النشطين (VIP)
+            all_users = get_all_users_ids()
+            for uid, is_banned_status in all_users:
+                 if is_banned_status == 0 and uid != ADMIN_ID and is_user_vip(uid):
+                    try:
+                        await bot.send_message(uid, close_msg)
+                    except Exception:
+                        pass
+                        
+            # إشعار الأدمن
+            if ADMIN_ID != 0:
+                await bot.send_message(ADMIN_ID, f"🔔 تم إغلاق الصفقة **{trade_id}** بنجاح على: {exit_status}", parse_mode="HTML")
+
+
+    print(f"✅ تم الانتهاء من فحص الصفقات. تم إغلاق {closed_count} صفقة.")
+
+# ===============================================
+# === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
+# ===============================================
+
+async def scheduled_tasks():
+    # يبدأ التشغيل بعد فترة قصيرة
+    await asyncio.sleep(5) 
+    while True:
+        # فحص الصفقات المفتوحة كل 'TRADE_CHECK_INTERVAL' ثانية
+        await check_open_trades()
+        await asyncio.sleep(TRADE_CHECK_INTERVAL)
+
+async def main():
+    # تهيئة قاعدة البيانات وضمان وجود الجداول
+    init_db()
+    
+    # تطبيق الـ Middleware على جميع الرسائل للمعالجة
+    dp.message.middleware(AccessMiddleware())
+    
+    # تشغيل المهام المجدولة (مثل فحص الصفقات)
+    asyncio.create_task(scheduled_tasks())
+    
+    # بدء البوت
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("🤖 تم إيقاف البوت بنجاح.")
+    except Exception as e:
+        print(f"حدث خطأ كبير: {e}")
