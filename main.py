@@ -35,7 +35,7 @@ class UserStates(StatesGroup):
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
 TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "GC=F") 
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.85")) 
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.90")) # تم الرفع إلى 90% للحصول على إشارات أقوى
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1") # يوزر الأدمن للمراسلة
 
 try:
@@ -66,7 +66,6 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # يجب أن تكون كل الأوامر في عملية واحدة (Transactional)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -90,7 +89,6 @@ def init_db():
 def add_user(user_id, username):
     conn = get_db_connection()
     cursor = conn.cursor()
-    # ON CONFLICT DO NOTHING يكافئ INSERT OR IGNORE
     cursor.execute("""
         INSERT INTO users (user_id, username, joined_at) 
         VALUES (%s, %s, %s)
@@ -142,27 +140,24 @@ def is_user_vip(user_id):
     conn.close()
     return result is not None and result[0] > time.time()
     
-# تم تعديل هذه الدالة لحل خطأ 'NoneType' الذي ظهر لك
+# الدالة المعدلة لحل مشكلة NoneType
 def activate_key(user_id, key):
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
-        # 1. التأكد من وجود المفتاح وعدم استخدامه
         cursor.execute("SELECT days FROM invite_keys WHERE key = %s AND used_by IS NULL", (key,))
         key_data = cursor.fetchone()
 
         if key_data:
             days = key_data[0]
             
-            # 2. تحديث المفتاح
             cursor.execute("UPDATE invite_keys SET used_by = %s, used_at = %s WHERE key = %s", (user_id, time.time(), key))
             
-            # 3. جلب حالة VIP الحالية للمستخدم بأمان
             cursor.execute("SELECT vip_until FROM users WHERE user_id = %s", (user_id,))
             user_data = cursor.fetchone() 
             
-            # إذا لم يجد بيانات (None), نعتبر نهاية الاشتراك صفر (غير مشترك)
+            # معالجة القيمة الفارغة بأمان
             vip_until_ts = user_data[0] if user_data else 0.0 
             
             if vip_until_ts > time.time():
@@ -172,7 +167,7 @@ def activate_key(user_id, key):
                 
             new_vip_until = start_date + timedelta(days=days)
             
-            # 4. تحديث أو إدخال حالة المستخدم (ضمان التسجيل)
+            # تحديث أو إدخال حالة المستخدم (ضمان التسجيل)
             cursor.execute("""
                 INSERT INTO users (user_id, vip_until) VALUES (%s, %s)
                 ON CONFLICT (user_id) DO UPDATE SET vip_until = %s
@@ -205,7 +200,7 @@ def create_invite_key(admin_id, days):
     return key
 
 
-# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) - حل استقرار التسجيل ===============
+# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) ===============
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
         self, handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -216,56 +211,88 @@ class AccessMiddleware(BaseMiddleware):
         user_id = user.id
         username = user.username or "مستخدم"
         
-        # 🚨 الإضافة الجبرية في بداية المعالجة لضمان التسجيل الفوري
+        # الإضافة الجبرية في بداية المعالجة لضمان التسجيل الفوري
         if isinstance(event, types.Message):
             add_user(user_id, username) 
 
-        # 1. السماح للأدمن بالمرور دائمًا
         if user_id == ADMIN_ID: return await handler(event, data)
 
-        # 2. السماح بمرور /start دائمًا (للجميع)
         if isinstance(event, types.Message) and (event.text == '/start' or event.text.startswith('/start ')):
              return await handler(event, data) 
              
-        # 3. فحص الحظر (لجميع الرسائل الأخرى)
         allowed_for_banned = ["💬 تواصل مع الدعم", "💰 خطة الأسعار VIP", "ℹ️ عن AlphaTradeAI"]
         if is_banned(user_id):
             if isinstance(event, types.Message) and event.text not in allowed_for_banned:
                  await event.answer("🚫 حسابك محظور من استخدام البوت. يمكنك التواصل مع الدعم أو التحقق من الأسعار/المعلومات فقط.")
                  return
             
-        # 4. الأزرار المسموح بها للمستخدم العادي (حتى لو لم يكن VIP)
         allowed_for_all = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك", "💰 خطة الأسعار VIP"]
         
         if isinstance(event, types.Message) and event.text in allowed_for_all:
              return await handler(event, data) 
 
-        # 5. منع الوصول للصفقات أو المميزات الأخرى إذا لم يكن VIP 
         if not is_user_vip(user_id):
             if isinstance(event, types.Message):
                 await event.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط. يرجى تفعيل مفتاح اشتراك لتتمكن من استخدامها.")
             return
 
-        # 6. السماح بمرور أي شيء آخر للمشتركين VIP
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل الذكي ===============
+# =============== وظائف التداول والتحليل (النسخة الأقوى) ===============
 
 def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float]:
     """
-    تحليل ذكي (تقاطع EMA) وحساب نسبة الثقة، وتحديد Entry/TP/SL.
+    تحليل ذكي باستخدام 4 فلاتر (EMA 1m, RSI, ATR, EMA 5m) لتحديد إشارة فائقة القوة.
     """
     try:
-        data = yf.download(
+        # 1. جلب بيانات الإطار الزمني الأصغر (1 دقيقة)
+        data_1m = yf.download(
             symbol, 
-            period="1d", interval="1m", progress=False, auto_adjust=True     
+            period="2d", interval="1m", progress=False, auto_adjust=True     
+        )
+        # 2. جلب بيانات الإطار الزمني الأكبر (5 دقائق) للتأكيد
+        data_5m = yf.download(
+            symbol,
+            period="7d", interval="5m", progress=False, auto_adjust=True
         )
         
-        if data.empty or len(data) < 30:
+        if data_1m.empty or len(data_1m) < 50 or data_5m.empty or len(data_5m) < 20: 
             return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {symbol}.", 0.0, "HOLD", 0.0, 0.0, 0.0
 
+        # =============== تحليل الإطار الزمني الأكبر (5 دقائق) ===============
+        
+        # حساب EMA على إطار 5 دقائق لتحديد الاتجاه الأكبر
+        data_5m['EMA_10'] = data_5m['Close'].ewm(span=10, adjust=False).mean()
+        data_5m['EMA_30'] = data_5m['Close'].ewm(span=30, adjust=False).mean()
+        
+        ema_fast_5m = data_5m['EMA_10'].iloc[-1]
+        ema_slow_5m = data_5m['EMA_30'].iloc[-1]
+        
+        htf_trend = "BULLISH" if ema_fast_5m > ema_slow_5m else "BEARISH"
+        
+        # =============== تحليل الإطار الزمني الأصغر (1 دقيقة) ===============
+        
+        data = data_1m 
+        
+        # مؤشرات EMA (الاتجاه)
         data['EMA_5'] = data['Close'].ewm(span=5, adjust=False).mean()
         data['EMA_20'] = data['Close'].ewm(span=20, adjust=False).mean()
+        
+        # مؤشر RSI (الزخم)
+        delta = data['Close'].diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        RS = gain.ewm(com=14-1, min_periods=14, adjust=False).mean() / loss.ewm(com=14-1, min_periods=14, adjust=False).mean()
+        data['RSI'] = 100 - (100 / (1 + RS))
+        
+        # مؤشر ATR (التقلب)
+        high_low = data['High'] - data['Low']
+        high_close = (data['High'] - data['Close'].shift()).abs()
+        low_close = (data['Low'] - data['Close'].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        data['ATR'] = tr.rolling(14).mean()
+
+        # =============== استخلاص القيم وتحديد الإشارة ===============
         
         latest_price = data['Close'].iloc[-1].item() 
         latest_time = data.index[-1].strftime('%Y-%m-%d %H:%M:%S')
@@ -275,33 +302,73 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         ema_fast_current = data['EMA_5'].iloc[-1]
         ema_slow_current = data['EMA_20'].iloc[-1]
         
+        current_rsi = data['RSI'].iloc[-1]
+        current_atr = data['ATR'].iloc[-1]
+        
+        MIN_ATR_THRESHOLD = 0.5 
+        SL_FACTOR = 1.0 
+        TP_FACTOR = 3.0
+        MIN_SL = 0.5 # حد أدنى لوقف الخسارة لتجنب القيم الصفرية في السوق الهادئ
+        
         action = "HOLD"
         confidence = 0.5
-        SL_RISK = 0.005 
-        TP_REWARD = 0.015
         entry_price = latest_price
         stop_loss = 0.0
         take_profit = 0.0
+
+        # الفلتر الأول: هل السوق نشط بما يكفي؟
+        if current_atr < MIN_ATR_THRESHOLD:
+            return f"⚠️ السوق هادئ جداً (ATR: {current_atr:.2f} < {MIN_ATR_THRESHOLD}). الإشارة HOLD.", 0.0, "HOLD", 0.0, 0.0, 0.0
+
+        # تحديد نوع الإشارة
+        is_buy_signal = (ema_fast_prev <= ema_slow_prev and ema_fast_current > ema_slow_current)
+        is_buy_trend = (ema_fast_current > ema_slow_current)
+        is_sell_signal = (ema_fast_prev >= ema_slow_prev and ema_fast_current < ema_slow_current)
+        is_sell_trend = (ema_fast_current < ema_slow_current)
+
+        if is_buy_signal or is_buy_trend:
+            if htf_trend == "BULLISH": # شرط التأكيد من الإطار الزمني الأكبر
+                action = "BUY"
+                if current_rsi > 50: 
+                    confidence = 0.99 if is_buy_signal else 0.95
+                else:
+                    confidence = 0.70 
+            else:
+                confidence = 0.50 # تجاهل الإشارة لأنها عكس الاتجاه الأكبر
+                
+        elif is_sell_signal or is_sell_trend:
+            if htf_trend == "BEARISH": # شرط التأكيد من الإطار الزمني الأكبر
+                action = "SELL"
+                if current_rsi < 50:
+                    confidence = 0.99 if is_sell_signal else 0.95
+                else:
+                    confidence = 0.70
+            else:
+                 confidence = 0.50 
         
-        if ema_fast_prev <= ema_slow_prev and ema_fast_current > ema_slow_current:
-            action = "BUY"; confidence = 0.95 
-            stop_loss = latest_price * (1 - SL_RISK); take_profit = latest_price * (1 + TP_REWARD)
-        elif ema_fast_prev >= ema_slow_prev and ema_fast_current < ema_slow_current:
-            action = "SELL"; confidence = 0.95
-            stop_loss = latest_price * (1 + SL_RISK); take_profit = latest_price * (1 - TP_REWARD)
-        elif ema_fast_current > ema_slow_current:
-             action = "BUY"; confidence = 0.75
-             stop_loss = latest_price * (1 - SL_RISK); take_profit = latest_price * (1 + TP_REWARD)
-        elif ema_fast_current < ema_slow_current:
-             action = "SELL"; confidence = 0.75
-             stop_loss = latest_price * (1 + SL_RISK); take_profit = latest_price * (1 - TP_REWARD)
+        # =============== حساب نقاط الدخول/الخروج بالـ ATR + حد أدنى ===============
+
+        if action != "HOLD":
+            # نختار الأكبر بين الـ ATR المحسوب والحد الأدنى (MIN_SL)
+            risk_amount = max(current_atr * SL_FACTOR, MIN_SL) 
+
+            if action == "BUY":
+                stop_loss = entry_price - risk_amount 
+                take_profit = entry_price + (risk_amount * TP_FACTOR) 
             
-        price_msg = f"📊 آخر سعر لـ <b>{symbol}</b>:\nالسعر: ${latest_price:,.2f}\nالوقت: {latest_time} UTC"
+            elif action == "SELL":
+                stop_loss = entry_price + risk_amount
+                take_profit = entry_price - (risk_amount * TP_FACTOR)
+        
+        # تعديل رسالة الإرسال لتضمين معلومة الثقة العالية
+        price_msg = f"📊 آخر سعر لـ <b>{symbol}</b> (الاتجاه الأكبر: {htf_trend}):\nالسعر: ${latest_price:,.2f}\nالوقت: {latest_time} UTC"
         
         return price_msg, confidence, action, entry_price, stop_loss, take_profit
         
     except Exception as e:
         return f"❌ فشل في جلب بيانات التداول لـ {symbol} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0
+
+# =============== باقي أوامر البوت والجداول (بدون تغيير) ===============
 
 async def send_trade_signal(admin_triggered=False):
     
@@ -326,7 +393,7 @@ async def send_trade_signal(admin_triggered=False):
 🛑 **STOP LOSS (SL):** ${stop_loss:,.2f}
 🔒 **SUCCESS RATE:** {confidence_percent:.2f}%
 
-<i>Trade responsibly. This signal is based on {TRADE_SYMBOL} Smart EMA analysis.</i>
+<i>Trade responsibly. This signal is based on {TRADE_SYMBOL} Smart Multi-Filter Analysis (EMA, RSI, ATR, HTF).</i>
 """
     sent = 0
     all_users = get_all_users_ids()
@@ -353,7 +420,7 @@ async def send_analysis_alert():
     alert_messages = [
         "🔎 Scanning the Gold market... 🧐 Looking for a strong trading opportunity on XAUUSD.",
         "⏳ Analyzing Gold data now... Please wait, a VIP trade signal might drop soon!",
-        "🤖 Smart Analyst is running... 💡 Evaluating current EMA cross patterns for a high-confidence trade."
+        "🤖 Smart Analyst is running... 💡 Evaluating current Multi-Filter patterns for a high-confidence trade."
     ]
     
     msg_to_send = random.choice(alert_messages)
@@ -367,7 +434,7 @@ async def send_analysis_alert():
             except Exception:
                 pass
                 
-# =============== القوائم المُعدَّلة ===============
+# =============== القوائم المُعدَّلة (باقي الأوامر) ===============
 
 def user_menu():
     return ReplyKeyboardMarkup(
@@ -390,14 +457,13 @@ def admin_menu():
         resize_keyboard=True
     )
 
-# =============== أوامر الأدمن والمستخدم ===============
+# =============== أوامر الأدمن والمستخدم (باقي الأوامر) ===============
 
 @dp.message(Command("start"))
 async def cmd_start(msg: types.Message):
-    # تم تسجيل المستخدم في الـ Middleware، هنا يتم إظهار القائمة فقط
     welcome_msg = f"""
 🤖 <b>مرحبًا بك في AlphaTradeAI!</b>
-🚀 نظام ذكي يتابع سوق الذهب ({TRADE_SYMBOL}).
+🚀 نظام ذكي يتابع سوق الذهب ({TRADE_SYMBOL}) بأربعة فلاتر تحليلية.
 اختر من القائمة 👇
 """
     await msg.reply(welcome_msg, reply_markup=user_menu())
@@ -625,7 +691,7 @@ async def handle_user_actions(msg: types.Message):
 ━━━━━━━━━━━━━━━
 ✨ <b>ماذا يقدم لك الاشتراك VIP؟</b>
 1.  <b>الإشارات فائقة الدقة (High-Confidence):</b>
-    نظامنا يراقب حركة الذهب (XAUUSD) على مدار الساعة. نستخدم نموذج تقاطع المؤشرات الأُسيَّة (EMA) الذكي لفلترة الإشارات واختيار فقط الصفقات التي تتجاوز نسبة ثقة <b>{int(CONFIDENCE_THRESHOLD*100)}%</b>.
+    نظامنا يراقب حركة الذهب (XAUUSD) على مدار الساعة. نستخدم نموذج التحليل متعدد الفلاتر (EMA, RSI, ATR, HTF) لتصفية الإشارات واختيار فقط الصفقات التي تتجاوز نسبة ثقة <b>{int(CONFIDENCE_THRESHOLD*100)}%</b>.
 2.  <b>إدارة مخاطر احترافية:</b>
     كل إشارة تُرسَل إليك هي صفقة جاهزة للتنفيذ. تحصل على سعر الدخول (Entry Price)، هدف الربح (TP) ونقطة وقف الخسارة (SL).
 3.  <b>توفير الوقت والجهد:</b>
@@ -637,7 +703,7 @@ async def handle_user_actions(msg: types.Message):
         await msg.reply(marketing_text)
 
 
-# =============== الجدولة وتشغيل البوت ===============
+# =============== الجدولة وتشغيل البوت (باقي الأوامر) ===============
 
 def setup_random_schedules():
     
