@@ -19,7 +19,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
 
-# =============== تعريف حالات FSM ===============
+# =============== تعريف حالات FSM (لضمان تعريفها قبل استخدامها) ===============
 class AdminStates(StatesGroup):
     waiting_broadcast = State()
     waiting_trade = State()
@@ -35,7 +35,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
 TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "GC=F") 
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.85")) 
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1") # يوزر الأدمن للمراسلة
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
@@ -57,7 +57,8 @@ CONN = None
 
 def init_db():
     global CONN
-    CONN = sqlite3.connect(DB_NAME)
+    # استخدام check_same_thread=False ضروري لبيئات التشغيل غير المتزامنة مثل aiogram
+    CONN = sqlite3.connect(DB_NAME, check_same_thread=False) 
     cursor = CONN.cursor()
     
     cursor.execute("""
@@ -93,7 +94,11 @@ def is_banned(user_id):
     cursor = CONN.cursor()
     cursor.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
-    return result is not None and result[0] == 1
+    # إذا لم يكن المستخدم موجودًا، لا تعتبره محظورًا
+    return result is not None and result[0] == 1 
+
+# ... (بقية دوال DB: update_ban_status, get_all_users_ids, get_total_users, is_user_vip, activate_key, get_user_vip_status, create_invite_key)
+# ملاحظة: تم حذف بقية دوال DB لتجنب التكرار، لكن يجب أن تكون موجودة في الكود الكامل.
 
 def update_ban_status(user_id, status):
     cursor = CONN.cursor()
@@ -113,7 +118,6 @@ def get_total_users():
 
 # دوال الاشتراكات
 def is_user_vip(user_id):
-    """التحقق مما إذا كان المستخدم VIP (تاريخ اشتراكه لم ينتهِ بعد)."""
     cursor = CONN.cursor()
     cursor.execute("SELECT vip_until FROM users WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
@@ -121,7 +125,6 @@ def is_user_vip(user_id):
     return result[0] > time.time()
     
 def activate_key(user_id, key):
-    """تفعيل مفتاح الاشتراك للمستخدم."""
     cursor = CONN.cursor()
     cursor.execute("SELECT days FROM invite_keys WHERE key = ? AND used_by IS NULL", (key,))
     key_data = cursor.fetchone()
@@ -131,7 +134,12 @@ def activate_key(user_id, key):
         cursor.execute("UPDATE invite_keys SET used_by = ?, used_at = ? WHERE key = ?", (user_id, time.time(), key))
         
         cursor.execute("SELECT vip_until FROM users WHERE user_id = ?", (user_id,))
-        vip_until_ts = cursor.fetchone()[0]
+        # يتم التأكد هنا أن المستخدم موجود بالفعل في جدول users قبل جلب vip_until
+        user_data = cursor.fetchone()
+        if user_data is None: 
+            return False, 0, None # فشل، يجب أن يكون قد تم إضافته بالفعل عبر Middleware
+
+        vip_until_ts = user_data[0]
         
         if vip_until_ts > time.time():
             start_date = datetime.fromtimestamp(vip_until_ts)
@@ -148,7 +156,6 @@ def activate_key(user_id, key):
     return False, 0, None
 
 def get_user_vip_status(user_id):
-    """جلب حالة VIP للمستخدم."""
     cursor = CONN.cursor()
     cursor.execute("SELECT vip_until FROM users WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
@@ -157,7 +164,6 @@ def get_user_vip_status(user_id):
     return "غير مشترك"
 
 def create_invite_key(admin_id, days):
-    """توليد مفتاح اشتراك جديد بعدد الأيام."""
     key = str(uuid.uuid4()).split('-')[0] + '-' + str(uuid.uuid4()).split('-')[1]
     cursor = CONN.cursor()
     cursor.execute("INSERT INTO invite_keys (key, days, created_by) VALUES (?, ?, ?)", (key, days, admin_id))
@@ -165,7 +171,7 @@ def create_invite_key(admin_id, days):
     return key
 
 
-# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) - تم التعديل لضمان عمل /start ===============
+# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) - الحل الجذري ===============
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
         self, handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -174,23 +180,29 @@ class AccessMiddleware(BaseMiddleware):
         user = data.get('event_from_user')
         if user is None: return await handler(event, data)
         user_id = user.id
+        username = user.username or "مستخدم"
         
+        # 🚨 الإضافة الجبرية في بداية المعالجة
+        # هذا يضمن أن المستخدم موجود في DB قبل أي فحص أو محاولة للجلب.
+        if isinstance(event, types.Message):
+            add_user(user_id, username) 
+
         # 1. السماح للأدمن بالمرور دائمًا
         if user_id == ADMIN_ID: return await handler(event, data)
 
-        # 2. السماح بمرور /start دائمًا (للتسجيل)
+        # 2. السماح بمرور /start دائمًا (للجميع)
         if isinstance(event, types.Message) and (event.text == '/start' or event.text.startswith('/start ')):
-             # هذا يضمن وصول المستخدمين الجدد إلى cmd_start للتسجيل وإظهار القائمة
+             # تم تسجيل المستخدم، والسماح بالمرور لـ cmd_start لإظهار القائمة
              return await handler(event, data) 
              
-        # 3. بعد /start: فحص الحظر لجميع الأزرار الأخرى 
+        # 3. فحص الحظر (لجميع الرسائل الأخرى)
         allowed_for_banned = ["💬 تواصل مع الدعم", "💰 خطة الأسعار VIP", "ℹ️ عن AlphaTradeAI"]
         if is_banned(user_id):
             if isinstance(event, types.Message) and event.text not in allowed_for_banned:
                  await event.answer("🚫 حسابك محظور من استخدام البوت. يمكنك التواصل مع الدعم أو التحقق من الأسعار/المعلومات فقط.")
                  return
             
-        # 4. الأزرار المسموح بها للمستخدم العادي (حتى لو لم يكن VIP، ولكن VIP فقط يستفيد منها)
+        # 4. الأزرار المسموح بها للمستخدم العادي (حتى لو لم يكن VIP)
         allowed_for_all = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك", "💰 خطة الأسعار VIP"]
         
         if isinstance(event, types.Message) and event.text in allowed_for_all:
@@ -202,22 +214,16 @@ class AccessMiddleware(BaseMiddleware):
                 await event.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط. يرجى تفعيل مفتاح اشتراك لتتمكن من استخدامها.")
             return
 
-        # 6. السماح بمرور أي شيء آخر للمشتركين VIP (مثل سعر السوق، جدول اليوم، التحليل الفوري)
+        # 6. السماح بمرور أي شيء آخر للمشتركين VIP
         return await handler(event, data)
 
 # =============== وظائف التداول والتحليل الذكي (تم تصحيح مشكلة Series) ===============
 
 def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float]:
-    """
-    تحليل ذكي (تقاطع EMA) وحساب نسبة الثقة، وتحديد Entry/TP/SL.
-    """
     try:
         data = yf.download(
             symbol, 
-            period="1d",         
-            interval="1m",       
-            progress=False,
-            auto_adjust=True     
+            period="1d", interval="1m", progress=False, auto_adjust=True     
         )
         
         if data.empty or len(data) < 30:
@@ -226,7 +232,6 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         data['EMA_5'] = data['Close'].ewm(span=5, adjust=False).mean()
         data['EMA_20'] = data['Close'].ewm(span=20, adjust=False).mean()
         
-        # 🟢 الحل: استخدام .item() لضمان الحصول على قيمة رقمية واحدة (float)
         latest_price = data['Close'].iloc[-1].item() 
         latest_time = data.index[-1].strftime('%Y-%m-%d %H:%M:%S')
         
@@ -237,36 +242,25 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         
         action = "HOLD"
         confidence = 0.5
-        
-        SL_RISK = 0.005  # 0.5% risk
-        TP_REWARD = 0.015 # 1.5% reward (R:R 1:3)
+        SL_RISK = 0.005 
+        TP_REWARD = 0.015
         entry_price = latest_price
         stop_loss = 0.0
         take_profit = 0.0
         
-        # منطق تحديد الصفقة (تقاطع EMA)
         if ema_fast_prev <= ema_slow_prev and ema_fast_current > ema_slow_current:
-            action = "BUY"
-            confidence = 0.95 
-            stop_loss = latest_price * (1 - SL_RISK)
-            take_profit = latest_price * (1 + TP_REWARD)
+            action = "BUY"; confidence = 0.95 
+            stop_loss = latest_price * (1 - SL_RISK); take_profit = latest_price * (1 + TP_REWARD)
         elif ema_fast_prev >= ema_slow_prev and ema_fast_current < ema_slow_current:
-            action = "SELL"
-            confidence = 0.95
-            stop_loss = latest_price * (1 + SL_RISK)
-            take_profit = latest_price * (1 - TP_REWARD)
+            action = "SELL"; confidence = 0.95
+            stop_loss = latest_price * (1 + SL_RISK); take_profit = latest_price * (1 - TP_REWARD)
         elif ema_fast_current > ema_slow_current:
-             action = "BUY"
-             confidence = 0.75
-             stop_loss = latest_price * (1 - SL_RISK)
-             take_profit = latest_price * (1 + TP_REWARD)
+             action = "BUY"; confidence = 0.75
+             stop_loss = latest_price * (1 - SL_RISK); take_profit = latest_price * (1 + TP_REWARD)
         elif ema_fast_current < ema_slow_current:
-             action = "SELL"
-             confidence = 0.75
-             stop_loss = latest_price * (1 + SL_RISK)
-             take_profit = latest_price * (1 - TP_REWARD)
+             action = "SELL"; confidence = 0.75
+             stop_loss = latest_price * (1 + SL_RISK); take_profit = latest_price * (1 - TP_REWARD)
             
-        
         price_msg = f"📊 آخر سعر لـ <b>{symbol}</b>:\nالسعر: ${latest_price:,.2f}\nالوقت: {latest_time} UTC"
         
         return price_msg, confidence, action, entry_price, stop_loss, take_profit
@@ -275,7 +269,6 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         return f"❌ فشل في جلب بيانات التداول لـ {symbol} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0
 
 async def send_trade_signal(admin_triggered=False):
-    """إرسال إشارة تداول VIP باللغة الإنجليزية وبالمعاملات المطلوبة."""
     
     price_info_msg_ar, confidence, action, entry_price, stop_loss, take_profit = get_signal_and_confidence(TRADE_SYMBOL)
     
@@ -285,7 +278,6 @@ async def send_trade_signal(admin_triggered=False):
     if not is_high_confidence or action == "HOLD":
         return False
 
-    # بناء الرسالة باللغة الإنجليزية
     signal_emoji = "🟢" if action == "BUY" else "🔴"
     trade_action_en = "BUY" if action == "BUY" else "SELL"
     
@@ -322,7 +314,6 @@ async def send_trade_signal(admin_triggered=False):
     return True
 
 async def send_analysis_alert():
-    """وظيفة إرسال تنبيه عشوائي بأن البوت يجري تحليل (باللغة الإنجليزية)."""
     
     alert_messages = [
         "🔎 Scanning the Gold market... 🧐 Looking for a strong trading opportunity on XAUUSD.",
@@ -371,8 +362,8 @@ async def cmd_start(msg: types.Message):
     user_id = msg.from_user.id
     username = msg.from_user.username or "مستخدم"
     
-    # أهم خطوة: إضافة المستخدم الجديد في كل مرة يرسل /start
-    add_user(user_id, username) 
+    # تمت إضافة المستخدم في الـ Middleware، هنا يتم إظهار القائمة فقط
+    # add_user(user_id, username) # تم حذف هذا السطر لأنه أصبح في الـ Middleware
 
     welcome_msg = f"""
 🤖 <b>مرحبًا بك في AlphaTradeAI!</b>
@@ -391,7 +382,6 @@ async def admin_panel(msg: types.Message):
 @dp.message(F.text == "تحليل فوري ⚡️")
 async def analyze_market_now(msg: types.Message):
     if msg.from_user.id != ADMIN_ID: 
-        # هذا الزر سيعمل فقط لـ VIP، لكن Middleware يمنع غير VIP، لذلك نحتاج فقط للتأكد من الأدمن
         if not is_user_vip(msg.from_user.id): return
     
     await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
@@ -401,7 +391,6 @@ async def analyze_market_now(msg: types.Message):
     if sent_successfully:
         await msg.answer("✅ تم إرسال صفقة VIP بنجاح إلى المشتركين.")
     else:
-        # جلب البيانات لمعرفة سبب عدم الإرسال
         _, confidence, action, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
         confidence_percent = confidence * 100
         
@@ -412,13 +401,11 @@ async def analyze_market_now(msg: types.Message):
 
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
-    # هذا الزر يعمل فقط لـ VIP (يتم التحقق منه في Middleware)
     price_info_msg, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
     await msg.reply(price_info_msg)
 
 @dp.message(F.text == "📊 جدول اليوم")
 async def get_current_signal(msg: types.Message):
-    # هذا الزر يعمل فقط لـ VIP (يتم التحقق منه في Middleware)
     await msg.reply("🗓️ يتم تحليل السوق حاليًا. ستصلك الصفقات المجدولة تلقائيًا إذا توفرت.")
 
 @dp.message(F.text == "📝 حالة الاشتراك")
@@ -479,8 +466,7 @@ async def process_key_activation(msg: types.Message, state: FSMContext):
         
     await state.clear()
     
-# --- دوال الأدمن الأخرى ---
-
+# --- دوال الأدمن الأخرى (تم حذفها لتجنب التكرار - لكن يجب أن تكون موجودة في الكود النهائي) ---
 @dp.message(F.text == "🔑 إنشاء مفتاح اشتراك")
 async def create_key_start(msg: types.Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
@@ -501,6 +487,7 @@ async def process_key_days(msg: types.Message, state: FSMContext):
         await state.clear()
         await msg.answer("🎛️ العودة إلى لوحة الأدمن.", reply_markup=admin_menu())
 
+# ... (بقية دوال الأدمن: البث، الحظر، إلغاء الحظر، عرض المشتركين، عدد المستخدمين، العودة للقائمة)
 @dp.message(F.text == "📢 رسالة لكل المستخدمين")
 async def send_broadcast_start(msg: types.Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
@@ -600,7 +587,6 @@ async def handle_user_actions(msg: types.Message):
     if msg.text == "💬 تواصل مع الدعم":
         await msg.reply(f"📞 يمكنك التواصل مع الإدارة مباشرة عبر @{ADMIN_USERNAME} للإستفسارات أو الدعم.")
     elif msg.text == "ℹ️ عن AlphaTradeAI":
-        # النص التسويقي المُعدَّل
         marketing_text = f"""
 🚀 <b>AlphaTradeAI: ثورة الذكاء الاصطناعي في تداول الذهب!</b> 🚀
 
@@ -624,28 +610,19 @@ async def handle_user_actions(msg: types.Message):
 # =============== الجدولة وتشغيل البوت ===============
 
 def setup_random_schedules():
-    """إعداد جدول عشوائي للصفقات والتنبيهات (4-7 صفقات يومياً)."""
     
-    # 1. جدولة إشارات التنبيه العشوائية (3 مرات في اليوم)
     for _ in range(3):
-        hour = random.randint(7, 21) 
-        minute = random.randint(0, 59)
+        hour = random.randint(7, 21); minute = random.randint(0, 59)
         schedule_time = f"{hour:02d}:{minute:02d}"
         schedule.every().day.at(schedule_time).do(lambda: asyncio.create_task(send_analysis_alert()))
-        # print(f"Alert scheduled at {schedule_time}")
         
-    # 2. جدولة صفقات التحليل (4-7 مرات في اليوم)
     num_signals = random.randint(4, 7)
     for i in range(num_signals):
-        hour = random.randint(8, 23)
-        minute = random.randint(0, 59)
+        hour = random.randint(8, 23); minute = random.randint(0, 59)
         schedule_time = f"{hour:02d}:{minute:02d}"
         schedule.every().day.at(schedule_time).do(lambda: asyncio.create_task(send_trade_signal(admin_triggered=False)))
-        # print(f"Trade signal scheduled at {schedule_time}")
 
 async def scheduler_runner():
-    """تشغيل المهام المجدولة بشكل غير متزامن."""
-    # يجب أن تتصل هذه الدالة بعد تشغيل البوت لأول مرة في اليوم
     setup_random_schedules() 
     print("✅ تم إعداد جدول الصفقات العشوائية لليوم.")
     
@@ -657,7 +634,7 @@ async def scheduler_runner():
         await asyncio.sleep(1) 
 
 async def main():
-    # 1. تهيئة قاعدة البيانات
+    # 1. تهيئة قاعدة البيانات (ملاحظة check_same_thread=False في init_db)
     init_db()
     
     # 2. تسجيل الـ Middleware
