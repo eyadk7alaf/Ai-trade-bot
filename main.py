@@ -19,8 +19,18 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
 
-# =============== إعداد البوت والمتغيرات ===============
-# القيم تُسحب من Railway - لا تكتبها هنا مباشرة
+# =============== تعريف حالات FSM (تم النقل إلى الأعلى لتجنب NameError) ===============
+class AdminStates(StatesGroup):
+    waiting_broadcast = State()
+    waiting_trade = State()
+    waiting_ban = State()
+    waiting_unban = State()
+    waiting_key_days = State() 
+
+class UserStates(StatesGroup):
+    waiting_key_activation = State() 
+    
+# =============== إعداد البوت والمتغيرات (من Environment Variables) ===============
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
 TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "GC=F") 
@@ -98,7 +108,7 @@ def get_all_users_ids():
     
 def get_total_users():
     cursor = CONN.cursor()
-    cursor.execute("SELECT COUNT(...) FROM users") # تم استخدام ... لتجنب خطأ محتمل
+    cursor.execute("SELECT COUNT(user_id) FROM users") 
     return cursor.fetchone()[0]
 
 # دوال الاشتراكات
@@ -172,7 +182,6 @@ class AccessMiddleware(BaseMiddleware):
                 await event.answer("🚫 حسابك محظور من استخدام البوت.", reply_markup=types.ReplyKeyboardRemove())
             return 
         
-        # السماح بالوصول لبعض الأوامر دون اشتراك
         allowed_texts = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك"]
         if isinstance(event, types.Message) and (event.text == '/start' or event.text in allowed_texts or event.text.startswith('/start ')):
              return await handler(event, data)
@@ -192,7 +201,6 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
     يعود بـ: (رسالة السعر (عربي), نسبة الثقة, نوع الصفقة, سعر الدخول, وقف الخسارة, الهدف)
     """
     try:
-        # جلب بيانات 60 شمعة بدقة دقيقة واحدة
         data = yf.download(symbol, period="60m", interval="1m", progress=False)
         
         if data.empty or len(data) < 30:
@@ -212,7 +220,6 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         action = "HOLD"
         confidence = 0.5
         
-        # ثوابت حساب SL و TP
         SL_RISK = 0.005  # 0.5% risk
         TP_REWARD = 0.015 # 1.5% reward (R:R 1:3)
         entry_price = latest_price
@@ -241,7 +248,7 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
              stop_loss = latest_price * (1 + SL_RISK)
              take_profit = latest_price * (1 - TP_REWARD)
             
-        # رسالة السعر بالعربية (للاستخدام في قائمة المستخدم العادية)
+        
         price_msg = f"📊 آخر سعر لـ <b>{symbol}</b>:\nالسعر: ${latest_price:,.2f}\nالوقت: {latest_time} UTC"
         
         return price_msg, confidence, action, entry_price, stop_loss, take_profit
@@ -257,9 +264,8 @@ async def send_trade_signal(admin_triggered=False):
     confidence_percent = confidence * 100
     is_high_confidence = confidence >= CONFIDENCE_THRESHOLD
 
-    # لن نرسل الصفقة إذا لم تكن ذات ثقة عالية أو كانت HOLD
     if not is_high_confidence or action == "HOLD":
-        return False # لم يتم إرسال صفقة
+        return False
 
     # بناء الرسالة باللغة الإنجليزية
     signal_emoji = "🟢" if action == "BUY" else "🔴"
@@ -281,7 +287,6 @@ async def send_trade_signal(admin_triggered=False):
     all_users = get_all_users_ids()
     
     for uid, is_banned_status in all_users:
-        # إرسال فقط لغير المحظورين والمشتركين VIP
         if is_banned_status == 0 and uid != ADMIN_ID and is_user_vip(uid):
             try:
                 await bot.send_message(uid, trade_msg)
@@ -290,18 +295,16 @@ async def send_trade_signal(admin_triggered=False):
                 pass
     
     if ADMIN_ID != 0:
-        # إرسال إشعار للأدمن
         try:
             admin_note = "تم الإرسال عبر الأمر الفوري" if admin_triggered else "إرسال مجدول"
             await bot.send_message(ADMIN_ID, f"📢 تم إرسال صفقة VIP ({trade_action_en}) إلى {sent} مشترك.\nالثقة: {confidence_percent:.2f}%.\nملاحظة: {admin_note}")
         except Exception:
             pass
             
-    return True # تم إرسال صفقة
+    return True
 
-# وظيفة التنبيه باللغة الإنجليزية
 async def send_analysis_alert():
-    """وظيفة إرسال تنبيه عشوائي بأن البوت يجري تحليل."""
+    """وظيفة إرسال تنبيه عشوائي بأن البوت يجري تحليل (باللغة الإنجليزية)."""
     
     alert_messages = [
         "🔎 Scanning the Gold market... 🧐 Looking for a strong trading opportunity on XAUUSD.",
@@ -343,32 +346,7 @@ def admin_menu():
         resize_keyboard=True
     )
 
-# =============== أوامر الأدمن المُعدَّلة ===============
-
-@dp.message(F.text == "تحليل فوري ⚡️")
-async def analyze_market_now(msg: types.Message):
-    if msg.from_user.id != ADMIN_ID:
-        await msg.reply("🚫 ليس لديك صلاحية الوصول.")
-        return
-    
-    await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
-    
-    # تشغيل التحليل وإرسال الصفقة (إذا توفرت)
-    sent_successfully = await send_trade_signal(admin_triggered=True)
-    
-    if sent_successfully:
-        await msg.answer("✅ تم إرسال صفقة VIP بنجاح إلى المشتركين.")
-    else:
-        # نحتاج إلى جلب الثقة هنا لتوضيح سبب عدم الإرسال
-        _, confidence, action, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
-        confidence_percent = confidence * 100
-        
-        if action == "HOLD":
-             await msg.answer("💡 لا توجد إشارة واضحة (HOLD). لم يتم إرسال صفقة.")
-        else:
-             await msg.answer(f"⚠️ الإشارة موجودة ({action})، لكن نسبة الثقة {confidence_percent:.2f}% أقل من المطلوب ({int(CONFIDENCE_THRESHOLD*100)}%). لم يتم إرسال صفقة.")
-
-# =============== أوامر المستخدم ===============
+# =============== أوامر الأدمن والمستخدم ===============
 
 @dp.message(Command("start"))
 async def cmd_start(msg: types.Message):
@@ -383,16 +361,40 @@ async def cmd_start(msg: types.Message):
 اختر من القائمة 👇
 """
     await msg.reply(welcome_msg, reply_markup=user_menu())
+
+@dp.message(Command("admin"))
+async def admin_panel(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID:
+        await msg.reply("🚫 ليس لديك صلاحية الوصول إلى لوحة التحكم.")
+        return
+    await msg.reply("🎛️ مرحبًا بك في لوحة تحكم الأدمن!", reply_markup=admin_menu())
+
+@dp.message(F.text == "تحليل فوري ⚡️")
+async def analyze_market_now(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID: return
     
+    await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
+    
+    sent_successfully = await send_trade_signal(admin_triggered=True)
+    
+    if sent_successfully:
+        await msg.answer("✅ تم إرسال صفقة VIP بنجاح إلى المشتركين.")
+    else:
+        _, confidence, action, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
+        confidence_percent = confidence * 100
+        
+        if action == "HOLD":
+             await msg.answer("💡 لا توجد إشارة واضحة (HOLD). لم يتم إرسال صفقة.")
+        else:
+             await msg.answer(f"⚠️ الإشارة موجودة ({action})، لكن نسبة الثقة {confidence_percent:.2f}% أقل من المطلوب ({int(CONFIDENCE_THRESHOLD*100)}%). لم يتم إرسال صفقة.")
+
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
-    # نستدعي الدالة ونستخلص منها رسالة السعر فقط (باللغة العربية)
     price_info_msg, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
     await msg.reply(price_info_msg)
 
 @dp.message(F.text == "📊 جدول اليوم")
 async def get_current_signal(msg: types.Message):
-    # هذه الدالة تستخدم للإشارة إلى أن التحليل يعمل في الخلفية
     await msg.reply("🗓️ يتم تحليل السوق حاليًا. ستصلك الصفقات المجدولة تلقائيًا إذا توفرت.")
 
 @dp.message(F.text == "📝 حالة الاشتراك")
@@ -402,23 +404,28 @@ async def show_subscription_status(msg: types.Message):
         await msg.reply(f"⚠️ أنت حالياً **غير مشترك** في خدمة VIP.\nللاشتراك، اطلب مفتاح تفعيل من الأدمن (@{ADMIN_USERNAME}) ثم اضغط '🔗 تفعيل مفتاح الاشتراك'.")
     else:
         await msg.reply(f"✅ أنت مشترك في خدمة VIP.\nتنتهي صلاحية اشتراكك في: <b>{status}</b>.")
+        
+@dp.message(F.text == "🔗 تفعيل مفتاح الاشتراك")
+async def handle_invite_key(msg: types.Message, state: FSMContext):
+    await msg.reply("🔑 يرجى إرسال مفتاح الاشتراك VIP الخاص بك لتفعيله:")
+    await state.set_state(UserStates.waiting_key_activation)
 
-@dp.message(F.text == "💬 تواصل مع الدعم")
-async def handle_contact_support(msg: types.Message):
-    await msg.reply(f"📞 يمكنك التواصل مع الإدارة مباشرة عبر @{ADMIN_USERNAME} للإستفسارات أو الدعم.")
+@dp.message(UserStates.waiting_key_activation)
+async def process_key_activation(msg: types.Message, state: FSMContext):
+    user_id = msg.from_user.id
+    key = msg.text.strip()
     
-# ... (بقية دوال الأدمن الأخرى: الحظر، إلغاء الحظر، المفاتيح، البث تبقى كما هي)
-@dp.message(F.text == "🔙 عودة للمستخدم")
-async def back_to_user_menu(msg: types.Message):
-    if msg.from_user.id == ADMIN_ID:
-        await msg.reply("👤 العودة إلى قائمة المستخدم الرئيسية.", reply_markup=user_menu())
+    success, days, expiry_date = activate_key(user_id, key)
 
-@dp.message(F.text == "👥 عدد المستخدمين")
-async def show_user_count(msg: types.Message):
-    if msg.from_user.id == ADMIN_ID:
-        count = get_total_users()
-        await msg.reply(f"👥 عدد المستخدمين المسجلين: {count}")
-# (بقية دوال المفاتيح والبث والحظر يتم وضعها هنا)
+    if success:
+        await msg.reply(f"🎉 تهانينا! تم تفعيل اشتراكك VIP لمدة {days} أيام.\nتنتهي صلاحيته في: <b>{expiry_date.strftime('%Y-%m-%d %H:%M')}</b>.")
+    else:
+        await msg.reply("❌ فشل التفعيل. المفتاح غير صالح أو تم استخدامه مسبقًا.")
+        
+    await state.clear()
+    
+# --- دوال الأدمن الأخرى (إنشاء المفتاح، الحظر، البث) ---
+
 @dp.message(F.text == "🔑 إنشاء مفتاح اشتراك")
 async def create_key_start(msg: types.Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
@@ -439,8 +446,73 @@ async def process_key_days(msg: types.Message, state: FSMContext):
         await state.clear()
         await msg.answer("🎛️ العودة إلى لوحة الأدمن.", reply_markup=admin_menu())
 
+@dp.message(F.text == "📢 رسالة لكل المستخدمين")
+async def send_broadcast_start(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await msg.reply("📝 أرسل الرسالة التي تريد إرسالها لجميع المستخدمين:")
+    await state.set_state(AdminStates.waiting_broadcast)
+
+@dp.message(AdminStates.waiting_broadcast)
+async def process_broadcast(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    sent = 0
+    failed = 0
+    all_users = get_all_users_ids()
+    
+    for uid, is_banned_status in all_users:
+        if is_banned_status == 0: 
+            try:
+                await bot.send_message(uid, msg.text)
+                sent += 1
+            except Exception:
+                failed += 1
+            
+    await msg.reply(f"✅ تم إرسال الرسالة إلى {sent} مستخدم غير محظور.\n❌ فشل الإرسال إلى {failed} مستخدم.")
+    await state.clear()
+    await msg.answer("🎛️ العودة إلى لوحة الأدمن.", reply_markup=admin_menu())
+
+@dp.message(F.text == "🚫 حظر مستخدم")
+async def ban_user_start(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await msg.reply("📛 أرسل ID المستخدم المراد حظره:")
+    await state.set_state(AdminStates.waiting_ban)
+
+@dp.message(AdminStates.waiting_ban)
+async def process_ban(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    try:
+        uid = int(msg.text)
+        update_ban_status(uid, 1) 
+        await msg.reply(f"🚫 تم حظر المستخدم {uid} بنجاح.")
+        if uid != ADMIN_ID:
+             try:
+                 await bot.send_message(uid, "🚫 تم حظر حسابك من قبل الإدارة.")
+             except: pass
+    except Exception as e:
+        await msg.reply(f"❌ ID غير صالح أو حدث خطأ: {e}")
+    await state.clear()
+    await msg.answer("🎛️ العودة إلى لوحة الأدمن.", reply_markup=admin_menu())
+
+@dp.message(F.text == "✅ إلغاء حظر مستخدم")
+async def unban_user_start(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await msg.reply("♻️ أرسل ID المستخدم لإلغاء حظره:")
+    await state.set_state(AdminStates.waiting_unban)
+
+@dp.message(AdminStates.waiting_unban)
+async def process_unban(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    try:
+        uid = int(msg.text)
+        update_ban_status(uid, 0)
+        await msg.reply(f"✅ تم إلغاء حظر المستخدم {uid} بنجاح.")
+    except Exception as e:
+        await msg.reply(f"❌ ID غير صالح أو حدث خطأ: {e}")
+    await state.clear()
+    await msg.answer("🎛️ العودة إلى لوحة الأدمن.", reply_markup=admin_menu())
+
 @dp.message(F.text == "🗒️ عرض حالة المشتركين")
-async def show_keys(msg: types.Message):
+async def show_active_users(msg: types.Message):
     if msg.from_user.id != ADMIN_ID: return
     cursor = CONN.cursor()
     cursor.execute("SELECT user_id, vip_until, username FROM users WHERE vip_until > ?", (time.time(),))
@@ -457,42 +529,29 @@ async def show_keys(msg: types.Message):
         
     await msg.reply(response)
     
-@dp.message(F.text == "🔗 تفعيل مفتاح الاشتراك")
-async def handle_invite_key(msg: types.Message, state: FSMContext):
-    await msg.reply("🔑 يرجى إرسال مفتاح الاشتراك VIP الخاص بك لتفعيله:")
-    await state.set_state(UserStates.waiting_key_activation)
+@dp.message(F.text == "👥 عدد المستخدمين")
+async def show_user_count(msg: types.Message):
+    if msg.from_user.id == ADMIN_ID:
+        count = get_total_users()
+        await msg.reply(f"👥 عدد المستخدمين المسجلين: {count}")
 
-@dp.message(UserStates.waiting_key_activation)
-async def process_key_activation(msg: types.Message, state: FSMContext):
-    user_id = msg.from_user.id
-    key = msg.text.strip()
-    
-    success, days, expiry_date = activate_key(user_id, key)
-
-    if success:
-        await msg.reply(f"🎉 تهانينا! تم تفعيل اشتراكك VIP لمدة {days} أيام.\nتنتهي صلاحيته في: <b>{expiry_date.strftime('%Y-%m-%d %H:%M')}</b>.")
-    else:
-        await msg.reply("❌ فشل التفعيل. المفتاح غير صالح أو تم استخدامه مسبقًا.")
+@dp.message(F.text == "🔙 عودة للمستخدم")
+async def back_to_user_menu(msg: types.Message):
+    if msg.from_user.id == ADMIN_ID:
+        await msg.reply("👤 العودة إلى قائمة المستخدم الرئيسية.", reply_markup=user_menu())
         
-    await state.clear()
+@dp.message(F.text.in_(["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI"]))
+async def handle_user_actions(msg: types.Message):
+    if msg.text == "💬 تواصل مع الدعم":
+        await msg.reply(f"📞 يمكنك التواصل مع الإدارة مباشرة عبر @{ADMIN_USERNAME} للإستفسارات أو الدعم.")
+    elif msg.text == "ℹ️ عن AlphaTradeAI":
+        await msg.reply("🌟 نحن نقدم تحليلات تداول تعتمد على الذكاء الاصطناعي لمساعدتك في اتخاذ قرارات أفضل في سوق الذهب (XAUUSD).")
 
 
-class AdminStates(StatesGroup):
-    waiting_broadcast = State()
-    waiting_trade = State()
-    waiting_ban = State()
-    waiting_unban = State()
-    waiting_key_days = State() 
-
-class UserStates(StatesGroup):
-    waiting_key_activation = State() 
-    
-# ... (بقية دوال الحظر والبث)
-
-# =============== تشغيل البوت (Main Function) ===============
+# =============== الجدولة وتشغيل البوت ===============
 
 def setup_random_schedules():
-    """إعداد جدول عشوائي للصفقات والتنبيهات."""
+    """إعداد جدول عشوائي للصفقات والتنبيهات (4-7 صفقات يومياً)."""
     
     # 1. جدولة إشارات التنبيه العشوائية (3 مرات في اليوم)
     for _ in range(3):
@@ -508,7 +567,6 @@ def setup_random_schedules():
         hour = random.randint(8, 23)
         minute = random.randint(0, 59)
         schedule_time = f"{hour:02d}:{minute:02d}"
-        # إرسال صفقة مجدولة (admin_triggered=False)
         schedule.every().day.at(schedule_time).do(lambda: asyncio.create_task(send_trade_signal(admin_triggered=False)))
         print(f"Trade signal scheduled at {schedule_time}")
 
