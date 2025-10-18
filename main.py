@@ -1,4 +1,4 @@
-import asyncio
+Import asyncio
 import time
 import os
 import psycopg2
@@ -38,6 +38,8 @@ TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "GC=F")
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.90"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) # فاصل متابعة الصفقات بالثواني
+ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "3600")) # فاصل تنبيهات المراقبة بالسواني (ساعة = 3600)
+
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
@@ -166,14 +168,17 @@ def activate_key(user_id, key):
             
             cursor.execute("UPDATE invite_keys SET used_by = %s, used_at = %s WHERE key = %s", (user_id, time.time(), key))
             
+            # يجب التأكد من وجود سجل للمستخدم قبل محاولة قراءة vip_until
             cursor.execute("SELECT vip_until FROM users WHERE user_id = %s", (user_id,))
             user_data = cursor.fetchone() 
             
             vip_until_ts = user_data[0] if user_data and user_data[0] is not None else 0.0 
             
+            # إذا كان اشتراكه الحالي سارياً، نبدأ إضافة الأيام بعد تاريخ الانتهاء الحالي
             if vip_until_ts > time.time():
                 start_date = datetime.fromtimestamp(vip_until_ts)
             else:
+                # إذا لم يكن سارياً أو كان انتهى، نبدأ من الآن
                 start_date = datetime.now()
                 
             new_vip_until = start_date + timedelta(days=days)
@@ -301,6 +306,10 @@ class AccessMiddleware(BaseMiddleware):
         user_id = user.id
         username = user.username or "مستخدم"
         
+        # [قراءة حالة FSM]
+        state = data.get('state')
+        current_state = await state.get_state() if state else None
+        
         if isinstance(event, types.Message):
             add_user(user_id, username) 
 
@@ -308,6 +317,10 @@ class AccessMiddleware(BaseMiddleware):
 
         if isinstance(event, types.Message) and (event.text == '/start' or event.text.startswith('/start ')):
              return await handler(event, data) 
+        
+        # [السماح بالمرور إذا كان في حالة انتظار تفعيل المفتاح]
+        if current_state == UserStates.waiting_key_activation.state:
+            return await handler(event, data)
              
         allowed_for_banned = ["💬 تواصل مع الدعم", "💰 خطة الأسعار VIP", "ℹ️ عن AlphaTradeAI"]
         if is_banned(user_id):
@@ -315,7 +328,7 @@ class AccessMiddleware(BaseMiddleware):
                  await event.answer("🚫 حسابك محظور من استخدام البوت. يمكنك التواصل مع الدعم أو التحقق من الأسعار/المعلومات فقط.")
                  return
             
-        allowed_for_all = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك", "💰 خطة الأسعار VIP", "📈 سعر السوق الحالي"]
+        allowed_for_all = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك", "💰 خطة الأسعار VIP", "📈 سعر السوق الحالي", "🔍 الصفقات النشطة"]
         
         if isinstance(event, types.Message) and event.text in allowed_for_all:
              return await handler(event, data) 
@@ -495,12 +508,17 @@ async def send_trade_signal(admin_triggered=False):
             
     return True
 
+# [مهمة جديدة: إرسال تنبيهات المراقبة]
 async def send_analysis_alert():
+    """
+    يرسل تنبيهات عشوائية للمشتركين بأن البوت يراقب السوق.
+    """
     
     alert_messages = [
         "🔎 Scanning the Gold market... 🧐 Looking for a strong trading opportunity on XAUUSD.",
         "⏳ Analyzing Gold data now... Please wait, a VIP trade signal might drop soon!",
-        "🤖 Smart Analyst is running... 💡 Evaluating current Multi-Filter patterns for a high-confidence trade."
+        "🤖 Smart Analyst is running... 💡 Evaluating current Multi-Filter patterns for a high-confidence trade.",
+        "📊 البوت يراقب تحركات الذهب الآن. ابق عينيك على الإشعارات."
     ]
     
     msg_to_send = random.choice(alert_messages)
@@ -520,8 +538,9 @@ def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="📝 حالة الاشتراك")],
-            [KeyboardButton(text="🔗 تفعيل مفتاح الاشتراك"), KeyboardButton(text="💰 خطة الأسعار VIP")],
-            [KeyboardButton(text="💬 تواصل مع الدعم"), KeyboardButton(text="ℹ️ عن AlphaTradeAI")]
+            [KeyboardButton(text="🔗 تفعيل مفتاح الاشتراك"), KeyboardButton(text="🔍 الصفقات النشطة")], 
+            [KeyboardButton(text="💰 خطة الأسعار VIP"), KeyboardButton(text="💬 تواصل مع الدعم")],
+            [KeyboardButton(text="ℹ️ عن AlphaTradeAI")]
         ],
         resize_keyboard=True
     )
@@ -532,12 +551,13 @@ def admin_menu():
             [KeyboardButton(text="تحليل فوري ⚡️"), KeyboardButton(text="📊 جرد الصفقات اليومي")],
             [KeyboardButton(text="📢 رسالة لكل المستخدمين"), KeyboardButton(text="🔑 إنشاء مفتاح اشتراك")],
             [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء حظر مستخدم")],
-            [KeyboardButton(text="👥 عدد المستخدمين"), KeyboardButton(text="🔙 عودة للمستخدم")]
+            [KeyboardButton(text="👥 عدد المستخدمين"), KeyboardButton(text="🗒️ عرض حالة المشتركين")],
+            [KeyboardButton(text="🔙 عودة للمستخدم")]
         ],
         resize_keyboard=True
     )
 
-# =============== أوامر الأدمن والمستخدم ===============
+# =============== أوامر الأدمن والمستخدم (لا تغييرات كبيرة هنا) ===============
 
 @dp.message(Command("start"))
 async def cmd_start(msg: types.Message):
@@ -589,6 +609,33 @@ async def daily_inventory_report(msg: types.Message):
 async def get_current_price(msg: types.Message):
     price_info_msg, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
     await msg.reply(price_info_msg)
+    
+@dp.message(F.text == "🔍 الصفقات النشطة")
+async def show_active_trades(msg: types.Message):
+    
+    active_trades = get_active_trades()
+    
+    if not active_trades:
+        await msg.reply("✅ لا توجد حاليًا أي صفقات VIP نشطة. انتظر إشارة قادمة!")
+        return
+    
+    report = "⏳ **قائمة الصفقات النشطة حالياً (VIP)**\n━━━━━━━━━━━━━━━"
+    
+    for trade in active_trades:
+        action = trade['action']
+        entry = trade['entry_price']
+        tp = trade['take_profit']
+        sl = trade['stop_loss']
+        
+        signal_emoji = "🟢" if action == "BUY" else "🔴"
+        
+        report += f"""
+{signal_emoji} **{action} @ ${entry:,.2f}**
+  - **TP:** ${tp:,.2f}
+  - **SL:** ${sl:,.2f}
+  - **ID:** <code>{trade['trade_id']}</code>
+"""
+    await msg.reply(report, parse_mode="HTML")
 
 @dp.message(F.text == "📝 حالة الاشتراك")
 async def show_subscription_status(msg: types.Message):
@@ -611,13 +658,13 @@ async def process_key_activation(msg: types.Message, state: FSMContext):
     await state.clear()
     
     if success:
-        await msg.reply(f"🎉 تم تفعيل مفتاح الاشتراك بنجاح!\n✅ تمت إضافة {days} يوم/أيام إلى اشتراكك.\nالاشتراك الجديد ينتهي في: <b>{new_vip_until.strftime('%Y-%m-%d %H:%M')}</b>.", reply_markup=user_menu())
+        formatted_date = new_vip_until.strftime('%Y-%m-%d %H:%M') if new_vip_until else "غير محدد"
+        await msg.reply(f"🎉 تم تفعيل مفتاح الاشتراك بنجاح!\n✅ تمت إضافة {days} يوم/أيام إلى اشتراكك.\nالاشتراك الجديد ينتهي في: <b>{formatted_date}</b>.", reply_markup=user_menu())
     else:
         await msg.reply("❌ فشل تفعيل المفتاح. يرجى التأكد من صحة المفتاح وأنه لم يُستخدم من قبل.", reply_markup=user_menu())
 
 @dp.message(F.text == "💰 خطة الأسعار VIP")
 async def show_prices(msg: types.Message):
-    # [تعديل جديد] محتوى خطة الأسعار
     prices_msg = f"""
 🌟 **مفتاحك للنجاح يبدأ هنا! 🔑**
 
@@ -657,11 +704,11 @@ async def contact_support(msg: types.Message):
 
 @dp.message(F.text == "ℹ️ عن AlphaTradeAI")
 async def about_bot(msg: types.Message):
-    # [تعديل جديد] محتوى عن البوت
+    threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
     about_msg = f"""
 🚀 <b>AlphaTradeAI: ثورة التحليل الكمّي في تداول الذهب!</b> 🚀
 
-نحن لسنا مجرد بوت، بل منصة تحليل ذكية ومؤتمتة بالكامل، مصممة لملاحقة أكبر الفرص في سوق الذهب (XAUUSD). مهمتنا هي تصفية ضجيج السوق وتقديم إشارات <b>مؤكدة فقط</b>.
+نحن لسنا مجرد بوت، بل منصة تحليل ذكية ومؤتمتة بالكامل، مصممة لملاحقة أكبر الفرص في سوق الذهب (XAUUSD). مهمتنا هي تصفية ضجيح السوق وتقديم إشارات <b>مؤكدة فقط</b>.
 
 ━━━━━━━━━━━━━━━
 🛡️ **ماذا يقدم لك الاشتراك VIP؟ (ميزة القوة الخارقة)**
@@ -673,7 +720,7 @@ async def about_bot(msg: types.Message):
     * **الفلتر 4 (HTF):** التأكد من توافق الإشارة مع الاتجاه الأكبر (5 دقائق) لتجنب الإشارات الكاذبة.
     
 2.  <b>أعلى درجات الثقة:</b>
-    لا يتم إرسال أي صفقة إلا إذا تجاوزت نسبة الثقة **85%** (حالياً يتم الإرسال عند {int(CONFIDENCE_THRESHOLD*100)}% أو أعلى). هذا يعني أنك تحصل على إشارات نادرة، لكنها فائقة القوة.
+    لا يتم إرسال أي صفقة إلا إذا تجاوزت نسبة الثقة **{threshold_percent}%** (حالياً يتم الإرسال عند {threshold_percent}% أو أعلى). هذا يعني أنك تحصل على إشارات نادرة، لكنها فائقة القوة.
     
 3.  <b>إدارة مخاطر 1:3:</b>
     كل صفقة جاهزة للتنفيذ بنسبة مخاطرة إلى عائد مثالية (هدف الربح = 3 أضعاف وقف الخسارة)، لضمان أن **الأرباح تفوق الخسائر دائمًا** على المدى الطويل.
@@ -830,12 +877,10 @@ async def check_open_trades():
     """
     مهمة غير متزامنة تعمل بشكل دوري لمتابعة الصفقات النشطة وإغلاقها عند تحقق الشروط.
     """
-    print(f"⏰ بدء فحص الصفقات المفتوحة...")
     
     active_trades = get_active_trades()
     
     if not active_trades:
-        print("✅ لا توجد صفقات نشطة حالياً.")
         return
 
     # 1. جلب السعر الحالي للسوق (مرة واحدة)
@@ -906,9 +951,6 @@ async def check_open_trades():
             if ADMIN_ID != 0:
                 await bot.send_message(ADMIN_ID, f"🔔 تم إغلاق الصفقة **{trade_id}** بنجاح على: {exit_status}", parse_mode="HTML")
 
-
-    print(f"✅ تم الانتهاء من فحص الصفقات. تم إغلاق {closed_count} صفقة.")
-
 # ===============================================
 # === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
 # ===============================================
@@ -917,9 +959,18 @@ async def scheduled_tasks():
     # يبدأ التشغيل بعد فترة قصيرة
     await asyncio.sleep(5) 
     while True:
-        # فحص الصفقات المفتوحة كل 'TRADE_CHECK_INTERVAL' ثانية
+        # فحص الصفقات المفتوحة كل 'TRADE_CHECK_INTERVAL' ثانية (مراقبة الـ 24 ساعة)
         await check_open_trades()
         await asyncio.sleep(TRADE_CHECK_INTERVAL)
+        
+async def monitor_market_continously():
+    """مهمة إرسال تنبيهات المراقبة بشكل دوري (لتنبيه المستخدمين بأن البوت يعمل)."""
+    await asyncio.sleep(60) # يبدأ بعد دقيقة من تشغيل البوت
+    while True:
+        await send_analysis_alert()
+        # يستخدم ALERT_INTERVAL (ساعة واحدة افتراضياً)
+        await asyncio.sleep(ALERT_INTERVAL) 
+
 
 async def main():
     # تهيئة قاعدة البيانات وضمان وجود الجداول
@@ -930,6 +981,9 @@ async def main():
     
     # تشغيل المهام المجدولة (مثل فحص الصفقات)
     asyncio.create_task(scheduled_tasks())
+    
+    # [الإضافة الجديدة] تشغيل مهمة التنبيهات المستمرة
+    asyncio.create_task(monitor_market_continously())
     
     # بدء البوت
     await dp.start_polling(bot)
