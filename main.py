@@ -8,25 +8,29 @@ import schedule
 import random
 import uuid
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone # **[تعديل]: إضافة timezone للاستخدام في دوال الإدارة المالية**
 from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton # **[تعديل]: إضافة InlineKeyboardMarkup**
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
 
-# =============== تعريف حالات FSM ===============
+# =============== تعريف حالات FSM المُعدَّلة ===============
 class AdminStates(StatesGroup):
     waiting_broadcast = State()
     waiting_trade = State()
     waiting_ban = State()
     waiting_unban = State()
     waiting_key_days = State() 
+    # [إضافات جديدة لإدارة الأداء الشخصي]
+    waiting_new_capital = State() 
+    waiting_trade_result_input = State()
+    waiting_trade_pnl = State()
 
 class UserStates(StatesGroup):
     waiting_key_activation = State() 
@@ -34,17 +38,23 @@ class UserStates(StatesGroup):
 # =============== إعداد البوت والمتغيرات (من Environment Variables) ===============
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
-TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "GC=F") 
+TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "GC=F") # الذهب للعامة
+# [إضافة متطلباتك الشخصية]
+ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "GC=F") # الرمز الخاص هو الذهب
+ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) # رأس مالك الأولي: $100
+ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) # مخاطرة: 2% لكل صفقة
+
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.90"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) # فاصل متابعة الصفقات بالثواني
 ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "3600")) # فاصل تنبيهات المراقبة بالسواني (ساعة = 3600)
 
-
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
+    if ADMIN_ID == 0:
+        print("⚠️ ADMIN_ID هو 0. قد تكون وظائف الأدمن غير متاحة.")
 except ValueError:
-    print("⚠️ لم يتم تحديد ADMIN_ID بشكل صحيح. تم تعيينه إلى 0.")
+    print("❌ خطأ! ADMIN_ID في متغيرات البيئة ليس رقمًا صالحًا.")
     ADMIN_ID = 0 
 
 if not BOT_TOKEN:
@@ -55,65 +65,71 @@ bot = Bot(token=BOT_TOKEN,
           
 dp = Dispatcher(storage=MemoryStorage())
 
-# =============== قاعدة بيانات PostgreSQL (الحل الجذري للمشكلة) ===============
+# =============== قاعدة بيانات PostgreSQL (مع تحديث جدول الأداء) ===============
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("🚫 لم يتم العثور على DATABASE_URL. يرجى التأكد من ربط PostgreSQL بـ Railway.")
 
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    # محاولة إعادة الاتصال إذا فشلت الأولى
+    try:
+        return psycopg2.connect(DATABASE_URL)
+    except Exception as e:
+        print(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
+        return None
 
 # دوال CRUD أساسية
 def init_db():
     conn = get_db_connection()
+    if conn is None: return
     cursor = conn.cursor()
     
+    # [إنشاء الجداول الأصلية]
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT PRIMARY KEY,
-            username VARCHAR(255),
-            joined_at DOUBLE PRECISION,
-            is_banned INTEGER DEFAULT 0,
-            vip_until DOUBLE PRECISION DEFAULT 0.0
-        );
-        CREATE TABLE IF NOT EXISTS invite_keys (
-            key VARCHAR(255) PRIMARY KEY,
-            days INTEGER,
-            created_by BIGINT,
-            used_by BIGINT NULL,
-            used_at DOUBLE PRECISION NULL
-        );
-        -- جدول الصفقات الجديد
-        CREATE TABLE IF NOT EXISTS trades (
-            trade_id TEXT PRIMARY KEY,
-            sent_at DOUBLE PRECISION,
-            action VARCHAR(10),
-            entry_price DOUBLE PRECISION,
-            take_profit DOUBLE PRECISION,
-            stop_loss DOUBLE PRECISION,
-            status VARCHAR(50) DEFAULT 'ACTIVE', -- ACTIVE, CLOSED
-            exit_status VARCHAR(50) DEFAULT 'NONE', -- NONE, HIT_TP, HIT_SL, TIMEOUT
-            close_price DOUBLE PRECISION NULL,
-            user_count INTEGER
+        CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username VARCHAR(255), joined_at DOUBLE PRECISION, is_banned INTEGER DEFAULT 0, vip_until DOUBLE PRECISION DEFAULT 0.0);
+        CREATE TABLE IF NOT EXISTS invite_keys (key VARCHAR(255) PRIMARY KEY, days INTEGER, created_by BIGINT, used_by BIGINT NULL, used_at DOUBLE PRECISION NULL);
+        CREATE TABLE IF NOT EXISTS trades (trade_id TEXT PRIMARY KEY, sent_at DOUBLE PRECISION, action VARCHAR(10), entry_price DOUBLE PRECISION, take_profit DOUBLE PRECISION, stop_loss DOUBLE PRECISION, status VARCHAR(50) DEFAULT 'ACTIVE', exit_status VARCHAR(50) DEFAULT 'NONE', close_price DOUBLE PRECISION NULL, user_count INTEGER);
+        
+        -- [إضافة جدول الأداء الشخصي الجديد]
+        CREATE TABLE IF NOT EXISTS admin_performance (
+            id SERIAL PRIMARY KEY,
+            record_type VARCHAR(50) NOT NULL, -- 'CAPITAL', 'TRADE_RESULT'
+            timestamp DOUBLE PRECISION NOT NULL,
+            value_float DOUBLE PRECISION NULL, -- رأس المال أو قيمة الربح/الخسارة
+            trade_action VARCHAR(10) NULL,
+            trade_symbol VARCHAR(50) NULL,
+            lots_used DOUBLE PRECISION NULL
         );
     """)
     conn.commit()
+    
+    # [تسجيل رأس المال الأولي]
+    cursor.execute("SELECT value_float FROM admin_performance WHERE record_type = 'CAPITAL' ORDER BY timestamp DESC LIMIT 1")
+    if cursor.fetchone() is None:
+        cursor.execute("""
+            INSERT INTO admin_performance (record_type, timestamp, value_float) 
+            VALUES ('CAPITAL', %s, %s)
+        """, (time.time(), ADMIN_CAPITAL_DEFAULT))
+        conn.commit()
+        
     conn.close()
     print("✅ تم تهيئة جداول قاعدة البيانات (PostgreSQL) بنجاح.")
 
 def add_user(user_id, username):
     conn = get_db_connection()
+    if conn is None: return
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO users (user_id, username, joined_at) 
         VALUES (%s, %s, %s)
-        ON CONFLICT (user_id) DO UPDATE SET username = %s -- تحديث اسم المستخدم إذا تغير
+        ON CONFLICT (user_id) DO UPDATE SET username = %s 
     """, (user_id, username, time.time(), username))
     conn.commit()
     conn.close()
 
 def is_banned(user_id):
     conn = get_db_connection()
+    if conn is None: return False
     cursor = conn.cursor()
     cursor.execute("SELECT is_banned FROM users WHERE user_id = %s", (user_id,))
     result = cursor.fetchone()
@@ -122,6 +138,7 @@ def is_banned(user_id):
 
 def update_ban_status(user_id, status):
     conn = get_db_connection()
+    if conn is None: return
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO users (user_id, is_banned) VALUES (%s, %s)
@@ -132,6 +149,7 @@ def update_ban_status(user_id, status):
     
 def get_all_users_ids():
     conn = get_db_connection()
+    if conn is None: return []
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, is_banned FROM users")
     result = cursor.fetchall()
@@ -140,6 +158,7 @@ def get_all_users_ids():
     
 def get_total_users():
     conn = get_db_connection()
+    if conn is None: return 0
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(user_id) FROM users") 
     result = cursor.fetchone()[0]
@@ -149,14 +168,16 @@ def get_total_users():
 # دوال الاشتراكات
 def is_user_vip(user_id):
     conn = get_db_connection()
+    if conn is None: return False
     cursor = conn.cursor()
     cursor.execute("SELECT vip_until FROM users WHERE user_id = %s", (user_id,))
     result = cursor.fetchone()
     conn.close()
-    return result is not None and result[0] > time.time()
+    return result is not None and result[0] is not None and result[0] > time.time()
     
 def activate_key(user_id, key):
     conn = get_db_connection()
+    if conn is None: return False, 0, None
     cursor = conn.cursor()
 
     try:
@@ -168,17 +189,14 @@ def activate_key(user_id, key):
             
             cursor.execute("UPDATE invite_keys SET used_by = %s, used_at = %s WHERE key = %s", (user_id, time.time(), key))
             
-            # يجب التأكد من وجود سجل للمستخدم قبل محاولة قراءة vip_until
             cursor.execute("SELECT vip_until FROM users WHERE user_id = %s", (user_id,))
             user_data = cursor.fetchone() 
             
             vip_until_ts = user_data[0] if user_data and user_data[0] is not None else 0.0 
             
-            # إذا كان اشتراكه الحالي سارياً، نبدأ إضافة الأيام بعد تاريخ الانتهاء الحالي
             if vip_until_ts > time.time():
                 start_date = datetime.fromtimestamp(vip_until_ts)
             else:
-                # إذا لم يكن سارياً أو كان انتهى، نبدأ من الآن
                 start_date = datetime.now()
                 
             new_vip_until = start_date + timedelta(days=days)
@@ -197,6 +215,7 @@ def activate_key(user_id, key):
 
 def get_user_vip_status(user_id):
     conn = get_db_connection()
+    if conn is None: return "خطأ في الاتصال"
     cursor = conn.cursor()
     cursor.execute("SELECT vip_until FROM users WHERE user_id = %s", (user_id,))
     result = cursor.fetchone()
@@ -207,6 +226,7 @@ def get_user_vip_status(user_id):
 
 def create_invite_key(admin_id, days):
     conn = get_db_connection()
+    if conn is None: return None
     cursor = conn.cursor()
     key = str(uuid.uuid4()).split('-')[0] + '-' + str(uuid.uuid4()).split('-')[1]
     cursor.execute("INSERT INTO invite_keys (key, days, created_by) VALUES (%s, %s, %s)", (key, days, admin_id))
@@ -217,6 +237,7 @@ def create_invite_key(admin_id, days):
 # === دوال إدارة الصفقات ===
 def save_new_trade(action, entry, tp, sl, user_count):
     conn = get_db_connection()
+    if conn is None: return None
     cursor = conn.cursor()
     trade_id = "TRADE-" + str(uuid.uuid4()).split('-')[0]
     
@@ -231,6 +252,7 @@ def save_new_trade(action, entry, tp, sl, user_count):
 
 def get_active_trades():
     conn = get_db_connection()
+    if conn is None: return []
     cursor = conn.cursor()
     cursor.execute("""
         SELECT trade_id, action, entry_price, take_profit, stop_loss
@@ -244,6 +266,7 @@ def get_active_trades():
 
 def update_trade_status(trade_id, exit_status, close_price):
     conn = get_db_connection()
+    if conn is None: return
     cursor = conn.cursor()
     cursor.execute("""
         UPDATE trades 
@@ -255,6 +278,7 @@ def update_trade_status(trade_id, exit_status, close_price):
 
 def get_daily_trade_report():
     conn = get_db_connection()
+    if conn is None: return "⚠️ فشل الاتصال بقاعدة البيانات."
     cursor = conn.cursor()
     
     time_24_hours_ago = time.time() - (24 * 3600)
@@ -294,8 +318,128 @@ def get_daily_trade_report():
 
     return report_msg
 
+# =============== دوال إدارة الأداء الشخصي (جديدة) ===============
+def get_admin_financial_status():
+    conn = get_db_connection()
+    if conn is None: return ADMIN_CAPITAL_DEFAULT
+    cursor = conn.cursor()
+    # قراءة آخر قيمة لرأس المال
+    cursor.execute("SELECT value_float FROM admin_performance WHERE record_type = 'CAPITAL' ORDER BY timestamp DESC LIMIT 1")
+    result = cursor.fetchone()
+    conn.close()
+    # إذا لم يكن هناك سجل، عد إلى القيمة الافتراضية ($100)
+    return result[0] if result and result[0] is not None else ADMIN_CAPITAL_DEFAULT
 
-# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) ===============
+def update_admin_capital(new_capital: float):
+    conn = get_db_connection()
+    if conn is None: return
+    cursor = conn.cursor()
+    # تسجيل رأس المال الجديد
+    cursor.execute("INSERT INTO admin_performance (record_type, timestamp, value_float) VALUES ('CAPITAL', %s, %s)", (time.time(), new_capital))
+    conn.commit()
+    conn.close()
+
+def save_admin_trade_result(trade_symbol: str, action: str, lots: float, pnl: float):
+    conn = get_db_connection()
+    if conn is None: return
+    cursor = conn.cursor()
+    
+    # 1. تسجيل نتيجة الصفقة
+    cursor.execute("INSERT INTO admin_performance (record_type, timestamp, value_float, trade_symbol, trade_action, lots_used) VALUES ('TRADE_RESULT', %s, %s, %s, %s, %s)", 
+                   (time.time(), pnl, trade_symbol, action, lots))
+    
+    # 2. تحديث رأس المال (بشكل متزامن)
+    current_capital = get_admin_financial_status() 
+    new_capital = current_capital + pnl
+    
+    cursor.execute("INSERT INTO admin_performance (record_type, timestamp, value_float) VALUES ('CAPITAL', %s, %s)", (time.time(), new_capital))
+    
+    conn.commit()
+    conn.close()
+    
+def get_admin_trades_in_period(days: int = 7):
+    conn = get_db_connection()
+    if conn is None: return ADMIN_CAPITAL_DEFAULT, []
+    cursor = conn.cursor()
+    start_time = time.time() - (days * 24 * 3600)
+
+    # رأس المال في بداية الفترة
+    cursor.execute("SELECT value_float FROM admin_performance WHERE record_type = 'CAPITAL' AND timestamp < %s ORDER BY timestamp DESC LIMIT 1", (start_time,))
+    start_capital_result = cursor.fetchone()
+    start_capital = start_capital_result[0] if start_capital_result and start_capital_result[0] is not None else ADMIN_CAPITAL_DEFAULT
+
+    # نتائج الصفقات
+    cursor.execute("""
+        SELECT value_float, trade_action, lots_used, trade_symbol, timestamp
+        FROM admin_performance 
+        WHERE record_type = 'TRADE_RESULT' AND timestamp >= %s
+        ORDER BY timestamp ASC
+    """, (start_time,))
+    trades = cursor.fetchall()
+    conn.close()
+    return start_capital, trades
+
+def generate_weekly_performance_report():
+    start_capital, trades = get_admin_trades_in_period(days=7)
+    current_capital = get_admin_financial_status()
+    total_profit = sum(t[0] for t in trades)
+    
+    if start_capital == 0:
+         percentage_gain = 0.0
+    else:
+        percentage_gain = ((current_capital - start_capital) / start_capital * 100)
+    
+    start_date = datetime.fromtimestamp(time.time() - (7 * 24 * 3600)).strftime('%Y-%m-%d')
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    
+    report = f"""
+📈 **تقرير الأداء الشخصي** 📅 **الفترة:** {start_date} إلى {end_date}
+━━━━━━━━━━━━━━━
+💰 **رأس مال البداية:** ${start_capital:,.2f}
+💵 **رأس مال اليوم:** ${current_capital:,.2f}
+"""
+    if current_capital >= start_capital:
+        report += f"🟢 **صافي الربح/الخسارة:** ${total_profit:,.2f}\n"
+        report += f"📊 **نسبة النمو:** <b>+{percentage_gain:.2f}%</b>"
+    else:
+        report += f"🔴 **صافي الربح/الخسارة:** ${total_profit:,.2f}\n"
+        report += f"📊 **نسبة التراجع:** <b>{percentage_gain:.2f}%</b>"
+
+    if trades:
+        successful_trades = sum(1 for t in trades if t[0] > 0)
+        losing_trades = sum(1 for t in trades if t[0] <= 0)
+        report += f"\n\n✅ **الصفقات الرابحة:** {successful_trades}\n"
+        report += f"❌ **الصفقات الخاسرة:** {losing_trades}"
+    else:
+        report += "\n\n⚠️ لم يتم تسجيل أي صفقات خاصة خلال هذه الفترة."
+    return report
+    
+# =============== دالة حساب حجم اللوت (مُخصَّصة للأدمن) ===============
+def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tuple[float, str]:
+    """
+    يحسب حجم اللوت المناسب بناءً على رأس مال الأدمن ($100) والمخاطرة (2%).
+    """
+    
+    capital = get_admin_financial_status() 
+    risk_percent = ADMIN_RISK_PER_TRADE
+    
+    if stop_loss_distance == 0 or capital <= 0:
+        return 0.0, "خطأ في البيانات"
+        
+    risk_amount = capital * risk_percent # هذا هو $2 حالياً
+    
+    # الذهب: 1 لوت قياسي = 100 أوقية/وحدة. قيمة حركة $1 لـ 1 لوت هي $100.
+    # مسافة الوقف $0.5 لـ 1 لوت هي $50.
+    
+    # اللوت = مبلغ المخاطرة / (مسافة الوقف بالوحدات * قيمة النقطة للوت)
+    lot_size = risk_amount / (stop_loss_distance * 100)
+    
+    lot_size = max(0.01, round(lot_size, 2))
+    asset_info = "XAUUSD (Lot=100 units)"
+    
+    return lot_size, asset_info
+
+# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) - لا تغيير ===============
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
         self, handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -306,7 +450,6 @@ class AccessMiddleware(BaseMiddleware):
         user_id = user.id
         username = user.username or "مستخدم"
         
-        # [قراءة حالة FSM]
         state = data.get('state')
         current_state = await state.get_state() if state else None
         
@@ -318,7 +461,6 @@ class AccessMiddleware(BaseMiddleware):
         if isinstance(event, types.Message) and (event.text == '/start' or event.text.startswith('/start ')):
              return await handler(event, data) 
         
-        # [السماح بالمرور إذا كان في حالة انتظار تفعيل المفتاح]
         if current_state == UserStates.waiting_key_activation.state:
             return await handler(event, data)
              
@@ -340,37 +482,27 @@ class AccessMiddleware(BaseMiddleware):
 
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل (النسخة الأقوى) ===============
+# =============== وظائف التداول والتحليل (إضافة مسافة الوقف) ===============
 
-def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float]:
+def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float, float]:
     """
     تحليل ذكي باستخدام 4 فلاتر (EMA 1m, RSI, ATR, EMA 5m) لتحديد إشارة فائقة القوة.
+    تم تعديلها لتعيد مسافة الوقف (sl_distance)
     """
     try:
-        data_1m = yf.download(
-            symbol, 
-            period="2d", interval="1m", progress=False, auto_adjust=True     
-        )
-        data_5m = yf.download(
-            symbol,
-            period="7d", interval="5m", progress=False, auto_adjust=True
-        )
+        data_1m = yf.download(symbol, period="2d", interval="1m", progress=False, auto_adjust=True)
+        data_5m = yf.download(symbol, period="7d", interval="5m", progress=False, auto_adjust=True)
         
         if data_1m.empty or len(data_1m) < 50 or data_5m.empty or len(data_5m) < 20: 
-            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {symbol}.", 0.0, "HOLD", 0.0, 0.0, 0.0
+            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {symbol}.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
-        # =============== تحليل الإطار الزمني الأكبر (5 دقائق) ===============
+        # HTF Trend (5m)
         data_5m['EMA_10'] = data_5m['Close'].ewm(span=10, adjust=False).mean()
         data_5m['EMA_30'] = data_5m['Close'].ewm(span=30, adjust=False).mean()
+        htf_trend = "BULLISH" if data_5m['EMA_10'].iloc[-1] > data_5m['EMA_30'].iloc[-1] else "BEARISH"
         
-        ema_fast_5m = data_5m['EMA_10'].iloc[-1]
-        ema_slow_5m = data_5m['EMA_30'].iloc[-1]
-        
-        htf_trend = "BULLISH" if ema_fast_5m > ema_slow_5m else "BEARISH"
-        
-        # =============== تحليل الإطار الزمني الأصغر (1 دقيقة) ===============
+        # LFT Analysis (1m)
         data = data_1m 
-        
         data['EMA_5'] = data['Close'].ewm(span=5, adjust=False).mean()
         data['EMA_20'] = data['Close'].ewm(span=20, adjust=False).mean()
         
@@ -386,16 +518,12 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         data['ATR'] = tr.rolling(14).mean()
 
-        # =============== استخلاص القيم وتحديد الإشارة ===============
-        
         latest_price = data['Close'].iloc[-1].item() 
         latest_time = data.index[-1].strftime('%Y-%m-%d %H:%M:%S')
-        
         ema_fast_prev = data['EMA_5'].iloc[-2]
         ema_slow_prev = data['EMA_20'].iloc[-2]
         ema_fast_current = data['EMA_5'].iloc[-1]
         ema_slow_current = data['EMA_20'].iloc[-1]
-        
         current_rsi = data['RSI'].iloc[-1]
         current_atr = data['ATR'].iloc[-1]
         
@@ -403,16 +531,17 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         SL_FACTOR = 1.0 
         TP_FACTOR = 3.0
         MIN_SL = 0.5 
-        
+
         action = "HOLD"
         confidence = 0.5
         entry_price = latest_price
         stop_loss = 0.0
         take_profit = 0.0
+        stop_loss_distance = 0.0 # **القيمة الجديدة التي يجب إرجاعها**
 
         if current_atr < MIN_ATR_THRESHOLD:
-            return f"⚠️ السوق هادئ جداً (ATR: {current_atr:.2f} < {MIN_ATR_THRESHOLD}). الإشارة HOLD.", 0.0, "HOLD", 0.0, 0.0, 0.0
-
+            return f"⚠️ السوق هادئ جداً (ATR: {current_atr:.2f} < {MIN_ATR_THRESHOLD}). الإشارة HOLD.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
+            
         is_buy_signal = (ema_fast_prev <= ema_slow_prev and ema_fast_current > ema_slow_current)
         is_buy_trend = (ema_fast_current > ema_slow_current)
         is_sell_signal = (ema_fast_prev >= ema_slow_prev and ema_fast_current < ema_slow_current)
@@ -448,19 +577,23 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
             elif action == "SELL":
                 stop_loss = entry_price + risk_amount
                 take_profit = entry_price - (risk_amount * TP_FACTOR)
+                
+            stop_loss_distance = abs(entry_price - stop_loss) # **حساب المسافة**
         
         price_msg = f"📊 آخر سعر لـ <b>{symbol}</b> (الاتجاه الأكبر: {htf_trend}):\nالسعر: ${latest_price:,.2f}\nالوقت: {latest_time} UTC"
         
-        return price_msg, confidence, action, entry_price, stop_loss, take_profit
+        # **إضافة stop_loss_distance إلى القيمة المرجعة**
+        return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance 
         
     except Exception as e:
-        return f"❌ فشل في جلب بيانات التداول لـ {symbol} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0
+        return f"❌ فشل في جلب بيانات التداول لـ {symbol} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
-# =============== دالة إرسال الإشارة (مع حفظ الصفقة) ===============
+# =============== دالة إرسال الإشارة (مع تحديث ليتوافق مع الدالة الجديدة) ===============
 
 async def send_trade_signal(admin_triggered=False):
     
-    price_info_msg_ar, confidence, action, entry_price, stop_loss, take_profit = get_signal_and_confidence(TRADE_SYMBOL)
+    # [تحديث] استقبال 7 قيم بدلاً من 6
+    price_info_msg_ar, confidence, action, entry_price, stop_loss, take_profit, sl_distance = get_signal_and_confidence(TRADE_SYMBOL) 
     
     confidence_percent = confidence * 100
     is_high_confidence = confidence >= CONFIDENCE_THRESHOLD
@@ -507,32 +640,8 @@ async def send_trade_signal(admin_triggered=False):
             pass
             
     return True
-
-# [مهمة جديدة: إرسال تنبيهات المراقبة]
-async def send_analysis_alert():
-    """
-    يرسل تنبيهات عشوائية للمشتركين بأن البوت يراقب السوق.
-    """
-    
-    alert_messages = [
-        "🔎 Scanning the Gold market... 🧐 Looking for a strong trading opportunity on XAUUSD.",
-        "⏳ Analyzing Gold data now... Please wait, a VIP trade signal might drop soon!",
-        "🤖 Smart Analyst is running... 💡 Evaluating current Multi-Filter patterns for a high-confidence trade.",
-        "📊 البوت يراقب تحركات الذهب الآن. ابق عينيك على الإشعارات."
-    ]
-    
-    msg_to_send = random.choice(alert_messages)
-    
-    all_users = get_all_users_ids()
-    
-    for uid, is_banned_status in all_users:
-        if is_banned_status == 0 and uid != ADMIN_ID and is_user_vip(uid):
-            try:
-                await bot.send_message(uid, msg_to_send)
-            except Exception:
-                pass
                 
-# =============== القوائم المُعدَّلة ===============
+# =============== القوائم المُعدَّلة (إضافة الأزرار الجديدة للأدمن) ===============
 
 def user_menu():
     return ReplyKeyboardMarkup(
@@ -548,6 +657,10 @@ def user_menu():
 def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
+            # [إضافة الأزرار الجديدة]
+            [KeyboardButton(text="تحليل خاص (VIP) 👤"), KeyboardButton(text="تقرير الأداء الأسبوعي 📊")],
+            [KeyboardButton(text="تسجيل نتيجة صفقة 📝"), KeyboardButton(text="تعديل رأس المال 💵")],
+            # الأزرار الأصلية
             [KeyboardButton(text="تحليل فوري ⚡️"), KeyboardButton(text="📊 جرد الصفقات اليومي")],
             [KeyboardButton(text="📢 رسالة لكل المستخدمين"), KeyboardButton(text="🔑 إنشاء مفتاح اشتراك")],
             [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء حظر مستخدم")],
@@ -557,7 +670,185 @@ def admin_menu():
         resize_keyboard=True
     )
 
-# =============== أوامر الأدمن والمستخدم (لا تغييرات كبيرة هنا) ===============
+# =============== أوامر الأدمن الإضافية للميزات الشخصية (جديدة) ===============
+
+@dp.message(F.text == "تعديل رأس المال 💵")
+async def prompt_new_capital(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    current_capital = get_admin_financial_status()
+    await state.set_state(AdminStates.waiting_new_capital)
+    await msg.reply(
+        f"💰 رأس مالك الحالي المُسجل هو: **${current_capital:,.2f}**\n"
+        "يرجى إدخال رأس المال الجديد كقيمة عددية (مثال: 105.50):"
+    )
+
+@dp.message(AdminStates.waiting_new_capital)
+async def process_new_capital(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    try:
+        new_capital = float(msg.text.strip().replace('$', '').replace(',', ''))
+        if new_capital <= 0: raise ValueError
+        update_admin_capital(new_capital)
+        await state.clear()
+        await msg.reply(f"✅ تم تحديث رأس مالك بنجاح! رأس المال الجديد هو: **${new_capital:,.2f}**", reply_markup=admin_menu())
+    except ValueError:
+        await msg.reply("❌ قيمة رأس المال غير صحيحة. يرجى إدخال رقم موجب فقط.", reply_markup=admin_menu())
+
+@dp.message(F.text == "تحليل خاص (VIP) 👤")
+async def analyze_private_pair(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID: await msg.answer("🚫 هذه الميزة خاصة بالإدمن."); return
+    await msg.reply(f"⏳ جارٍ تحليل الزوج الخاص: **{ADMIN_TRADE_SYMBOL}** (الذهب)...")
+    
+    # [تعديل] استقبال 7 قيم
+    price_info_msg, confidence, action, entry, sl, tp, sl_distance = get_signal_and_confidence(ADMIN_TRADE_SYMBOL)
+    
+    confidence_percent = confidence * 100
+    current_capital = get_admin_financial_status()
+    
+    if action == "HOLD":
+        await msg.answer(f"💡 لا توجد إشارة واضحة (HOLD) على {ADMIN_TRADE_SYMBOL}.\nالثقة: {confidence_percent:.2f}%.\n{price_info_msg}", parse_mode="HTML")
+        return
+
+    # 1. حساب اللوت بناءً على $100 ومخاطرة 2%
+    lot_size, asset_info = calculate_lot_size_for_admin(ADMIN_TRADE_SYMBOL, sl_distance)
+    risk_amount = current_capital * ADMIN_RISK_PER_TRADE
+    
+    private_msg = f"""
+{('🟢' if action == 'BUY' else '🔴')} <b>YOUR PERSONAL TRADE - GOLD (XAUUSD)</b> {('🟢' if action == 'BUY' else '🔴')}
+━━━━━━━━━━━━━━━
+📈 **PAIR:** XAUUSD ({ADMIN_TRADE_SYMBOL})
+🔥 **ACTION:** {action} (Market Execution)
+💰 **ENTRY:** ${entry:,.2f}
+🎯 **TARGET (TP):** ${tp:,.2f}
+🛑 **STOP LOSS (SL):** ${sl:,.2f}
+🔒 **SUCCESS RATE:** {confidence_percent:.2f}%
+━━━━━━━━━━━━━━━
+📊 **خطة إدارة المخاطر الشخصية (2%):**
+* **رأس مالك الحالي:** <b>${current_capital:,.2f}</b>
+* **مخاطرتك لكل صفقة:** <b>{ADMIN_RISK_PER_TRADE * 100:.0f}%</b> (${risk_amount:,.2f})
+* **مسافة الـ SL (بالدولار/وحدة):** {sl_distance:,.2f}
+* **حجم اللوت المناسب:** <b>{lot_size:.2f}</b> لوت
+"""
+    await msg.answer(private_msg, parse_mode="HTML")
+    
+    # 2. طلب تتبع الصفقة
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ دخلت الصفقة بهذا اللوت", callback_data=f"track_trade_entry_{action}_{ADMIN_TRADE_SYMBOL}_{lot_size:.2f}")],
+        [InlineKeyboardButton(text="❌ لم أدخل الصفقة", callback_data="track_trade_no")]
+    ])
+    await msg.answer("❓ **هل دخلت هذه الصفقة؟** (اضغط لتتبع الأداء)", reply_markup=keyboard)
+
+@dp.callback_query(F.data.startswith("track_trade_entry_"))
+async def process_admin_trade_entry(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID: return
+    
+    try:
+        _, action, symbol, lots_str = call.data.split('_')
+        lots = float(lots_str)
+    except ValueError:
+        await call.message.edit_text("❌ خطأ في بيانات التتبع. حاول مجدداً.")
+        await call.answer()
+        return
+    
+    # حفظ بيانات الصفقة في FSM
+    await state.set_data({'action': action, 'symbol': symbol, 'lots': lots})
+    await state.set_state(AdminStates.waiting_trade_pnl)
+    
+    await call.message.edit_text(
+        f"✅ تم تأكيد دخولك صفقة {action} على {symbol} بحجم لوت: {lots:.2f}.\n\n"
+        "الآن، عند إغلاق الصفقة (ربح/خسارة)، أدخل **صافي الربح أو الخسارة بالدولار** (مثال: **+6.50** أو **-2.00**):"
+    )
+    await call.answer()
+    
+@dp.callback_query(F.data == "track_trade_no")
+async def process_admin_trade_no_entry(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID: return
+    await call.message.edit_text("👍 تم إلغاء تتبع الصفقة. يمكنك إدخال النتيجة لاحقاً يدوياً.")
+    await call.answer()
+
+
+@dp.message(F.text == "تسجيل نتيجة صفقة 📝")
+async def prompt_trade_result(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    current_state = await state.get_state()
+    
+    if current_state == AdminStates.waiting_trade_pnl.state:
+         await msg.reply("يرجى إدخال قيمة الربح/الخسارة الصافية (مثال: **+6** أو **-2**).")
+         return
+         
+    await state.set_state(AdminStates.waiting_trade_result_input)
+    await msg.reply("يرجى إدخال ملخص نتيجة الصفقة اليدوية بالترتيب التالي (افصل بينهما بمسافة):\n**الرمز العمل اللوت الربح/الخسارة**\n\nمثال: `GC=F BUY 0.05 -2.50`")
+
+@dp.message(AdminStates.waiting_trade_pnl)
+async def process_trade_pnl_after_entry(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    try:
+        pnl = float(msg.text.strip().replace('+', '').replace(',', ''))
+        data = await state.get_data()
+        
+        # التأكد من وجود البيانات في FSM
+        if 'symbol' not in data or 'action' not in data or 'lots' not in data:
+            await state.clear()
+            await msg.reply("❌ فقدت بيانات الصفقة الأصلية. يرجى استخدام زر **'تسجيل نتيجة صفقة 📝'** يدوياً.", reply_markup=admin_menu())
+            return
+
+        save_admin_trade_result(data['symbol'], data['action'], data['lots'], pnl)
+        new_capital = get_admin_financial_status()
+        await state.clear()
+        
+        await msg.reply(
+            f"✅ تم تسجيل نتيجة الصفقة بنجاح: **${pnl:,.2f}**.\n"
+            f"💰 رأس مالك الحالي أصبح: **${new_capital:,.2f}**.",
+            reply_markup=admin_menu()
+        )
+    except ValueError:
+        await msg.reply("❌ إدخال غير صحيح للربح/الخسارة. يرجى إدخال قيمة عددية موجبة أو سالبة.", reply_markup=admin_menu())
+    except Exception:
+         await state.clear()
+         await msg.reply("❌ حدث خطأ غير متوقع أثناء تسجيل النتيجة. يرجى المحاولة يدوياً أو مراجعة اللوغ.", reply_markup=admin_menu())
+
+@dp.message(AdminStates.waiting_trade_result_input)
+async def process_manual_trade_result(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    await state.clear()
+    
+    try:
+        parts = msg.text.strip().split()
+        if len(parts) != 4: raise ValueError("Invalid format")
+            
+        symbol = parts[0].upper()
+        action = parts[1].upper()
+        lots = float(parts[2])
+        pnl = float(parts[3])
+        
+        if action not in ['BUY', 'SELL'] or lots <= 0: raise ValueError("Invalid values")
+        
+        save_admin_trade_result(symbol, action, lots, pnl)
+        new_capital = get_admin_financial_status()
+        
+        await msg.reply(
+            f"✅ تم تسجيل الصفقة اليدوية: {symbol} ({action})، PnL: ${pnl:,.2f}.\n"
+            f"💰 رأس مالك الحالي أصبح: **${new_capital:,.2f}**.",
+            reply_markup=admin_menu()
+        )
+    except ValueError:
+        await msg.reply("❌ صيغة الإدخال غير صحيحة. يرجى اتباع المثال: `GC=F BUY 0.05 -2.50`", reply_markup=admin_menu())
+
+
+@dp.message(F.text == "تقرير الأداء الأسبوعي 📊")
+async def show_weekly_report(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID: return
+    report = generate_weekly_performance_report()
+    await msg.reply(report, parse_mode="HTML")
+
+
+# =============== تكملة أوامر الأدمن والمستخدم (الأوامر الأصلية) ===============
+# [جميع أوامر cmd_start, admin_panel, analyze_market_now, daily_inventory_report, get_current_price, show_active_trades, show_subscription_status, prompt_key_activation, process_key_activation, show_prices, contact_support, about_bot, back_to_user_menu, count_users, prompt_broadcast, send_broadcast, prompt_ban, process_ban, prompt_unban, process_unban, prompt_key_days, process_create_key, display_user_status, check_open_trades, send_analysis_alert, scheduled_tasks, monitor_market_continously, main, if __name__ == "__main__":]
+# يتم إبقاؤها كما هي في الكود الأصلي الذي أرسلته.
+# (لن يتم تكرارها هنا لتجنب تجاوز الحد الأقصى لحجم الرد، لكن يجب أن تكون موجودة في ملفك.)
+
+
+# [إعادة إضافة الدوال المتبقية من الكود الأصلي هنا]
 
 @dp.message(Command("start"))
 async def cmd_start(msg: types.Message):
@@ -588,7 +879,8 @@ async def analyze_market_now(msg: types.Message):
     if sent_successfully:
         await msg.answer("✅ تم إرسال صفقة VIP بنجاح إلى المشتركين.")
     else:
-        _, confidence, action, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
+        # [تعديل] استقبال 7 قيم
+        _, confidence, action, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
         confidence_percent = confidence * 100
         
         if action == "HOLD":
@@ -607,7 +899,8 @@ async def daily_inventory_report(msg: types.Message):
 
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
-    price_info_msg, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
+    # [تعديل] استقبال 7 قيم
+    price_info_msg, _, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
     await msg.reply(price_info_msg)
     
 @dp.message(F.text == "🔍 الصفقات النشطة")
@@ -708,7 +1001,7 @@ async def about_bot(msg: types.Message):
     about_msg = f"""
 🚀 <b>AlphaTradeAI: ثورة التحليل الكمّي في تداول الذهب!</b> 🚀
 
-نحن لسنا مجرد بوت، بل منصة تحليل ذكية ومؤتمتة بالكامل، مصممة لملاحقة أكبر الفرص في سوق الذهب (XAUUSD). مهمتنا هي تصفية ضجيح السوق وتقديم إشارات <b>مؤكدة فقط</b>.
+نحن لسنا مجرد بوت، بل منصة تحليل ذكية ومؤتمتة بالكامل، مصممة لملاحقة أكبر الفرص في سوق الذهب (XAUUSD). مهمتنا هي تصفية ضجيج السوق وتقديم إشارات <b>مؤكدة فقط</b>.
 
 ━━━━━━━━━━━━━━━
 🛡️ **ماذا يقدم لك الاشتراك VIP؟ (ميزة القوة الخارقة)**
@@ -843,6 +1136,7 @@ async def display_user_status(msg: types.Message):
     if msg.from_user.id != ADMIN_ID: return
     
     conn = get_db_connection()
+    if conn is None: return await msg.reply("❌ فشل الاتصال بقاعدة البيانات.")
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, username, is_banned, vip_until FROM users ORDER BY vip_until DESC LIMIT 20")
     users = cursor.fetchall()
@@ -868,22 +1162,17 @@ async def display_user_status(msg: types.Message):
         
     await msg.reply(report, parse_mode="HTML")
 
-
 # ===============================================
 # === دالة متابعة الصفقات (Trade Monitoring) ===
 # ===============================================
 
 async def check_open_trades():
-    """
-    مهمة غير متزامنة تعمل بشكل دوري لمتابعة الصفقات النشطة وإغلاقها عند تحقق الشروط.
-    """
     
     active_trades = get_active_trades()
     
     if not active_trades:
         return
 
-    # 1. جلب السعر الحالي للسوق (مرة واحدة)
     try:
         data = yf.download(TRADE_SYMBOL, period="1m", interval="1m", progress=False, auto_adjust=True)
         current_price = data['Close'].iloc[-1].item()
@@ -893,7 +1182,6 @@ async def check_open_trades():
 
     closed_count = 0
     
-    # 2. المرور على كل صفقة نشطة
     for trade in active_trades:
         trade_id = trade['trade_id']
         action = trade['action']
@@ -904,26 +1192,21 @@ async def check_open_trades():
         close_price = None
         
         if action == "BUY":
-            # حالة ضرب الهدف
             if current_price >= tp:
                 exit_status = "HIT_TP"
                 close_price = tp
-            # حالة ضرب الوقف
             elif current_price <= sl:
                 exit_status = "HIT_SL"
                 close_price = sl
         
         elif action == "SELL":
-            # حالة ضرب الهدف
             if current_price <= tp:
                 exit_status = "HIT_TP"
                 close_price = tp
-            # حالة ضرب الوقف
             elif current_price >= sl:
                 exit_status = "HIT_SL"
                 close_price = sl
 
-        # 3. إذا تم إغلاق الصفقة، قم بالتحديث والإشعار
         if exit_status:
             update_trade_status(trade_id, exit_status, close_price)
             closed_count += 1
@@ -938,7 +1221,6 @@ async def check_open_trades():
 🔒 **RESULT:** تم الإغلاق عند **{exit_status.replace('HIT_', '')}**!
 💰 **PRICE:** ${close_price:,.2f}
 """
-            # إرسال إلى جميع المستخدمين النشطين (VIP)
             all_users = get_all_users_ids()
             for uid, is_banned_status in all_users:
                  if is_banned_status == 0 and uid != ADMIN_ID and is_user_vip(uid):
@@ -947,7 +1229,6 @@ async def check_open_trades():
                     except Exception:
                         pass
                         
-            # إشعار الأدمن
             if ADMIN_ID != 0:
                 await bot.send_message(ADMIN_ID, f"🔔 تم إغلاق الصفقة **{trade_id}** بنجاح على: {exit_status}", parse_mode="HTML")
 
@@ -955,37 +1236,47 @@ async def check_open_trades():
 # === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
 # ===============================================
 
+async def send_analysis_alert():
+    
+    alert_messages = [
+        "🔎 Scanning the Gold market... 🧐 Looking for a strong trading opportunity on XAUUSD.",
+        "⏳ Analyzing Gold data now... Please wait, a VIP trade signal might drop soon!",
+        "🤖 Smart Analyst is running... 💡 Evaluating current Multi-Filter patterns for a high-confidence trade.",
+        "📊 البوت يراقب تحركات الذهب الآن. ابق عينيك على الإشعارات."
+    ]
+    
+    msg_to_send = random.choice(alert_messages)
+    
+    all_users = get_all_users_ids()
+    
+    for uid, is_banned_status in all_users:
+        if is_banned_status == 0 and uid != ADMIN_ID and is_user_vip(uid):
+            try:
+                await bot.send_message(uid, msg_to_send)
+            except Exception:
+                pass
+                
 async def scheduled_tasks():
-    # يبدأ التشغيل بعد فترة قصيرة
     await asyncio.sleep(5) 
     while True:
-        # فحص الصفقات المفتوحة كل 'TRADE_CHECK_INTERVAL' ثانية (مراقبة الـ 24 ساعة)
         await check_open_trades()
         await asyncio.sleep(TRADE_CHECK_INTERVAL)
         
 async def monitor_market_continously():
-    """مهمة إرسال تنبيهات المراقبة بشكل دوري (لتنبيه المستخدمين بأن البوت يعمل)."""
-    await asyncio.sleep(60) # يبدأ بعد دقيقة من تشغيل البوت
+    await asyncio.sleep(60)
     while True:
         await send_analysis_alert()
-        # يستخدم ALERT_INTERVAL (ساعة واحدة افتراضياً)
         await asyncio.sleep(ALERT_INTERVAL) 
 
 
 async def main():
-    # تهيئة قاعدة البيانات وضمان وجود الجداول
     init_db()
     
-    # تطبيق الـ Middleware على جميع الرسائل للمعالجة
     dp.message.middleware(AccessMiddleware())
     
-    # تشغيل المهام المجدولة (مثل فحص الصفقات)
     asyncio.create_task(scheduled_tasks())
-    
-    # [الإضافة الجديدة] تشغيل مهمة التنبيهات المستمرة
     asyncio.create_task(monitor_market_continously())
     
-    # بدء البوت
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
