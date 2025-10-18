@@ -843,12 +843,6 @@ async def show_weekly_report(msg: types.Message):
 
 
 # =============== تكملة أوامر الأدمن والمستخدم (الأوامر الأصلية) ===============
-# [جميع أوامر cmd_start, admin_panel, analyze_market_now, daily_inventory_report, get_current_price, show_active_trades, show_subscription_status, prompt_key_activation, process_key_activation, show_prices, contact_support, about_bot, back_to_user_menu, count_users, prompt_broadcast, send_broadcast, prompt_ban, process_ban, prompt_unban, process_unban, prompt_key_days, process_create_key, display_user_status, check_open_trades, send_analysis_alert, scheduled_tasks, monitor_market_continously, main, if __name__ == "__main__":]
-# يتم إبقاؤها كما هي في الكود الأصلي الذي أرسلته.
-# (لن يتم تكرارها هنا لتجنب تجاوز الحد الأقصى لحجم الرد، لكن يجب أن تكون موجودة في ملفك.)
-
-
-# [إعادة إضافة الدوال المتبقية من الكود الأصلي هنا]
 
 @dp.message(Command("start"))
 async def cmd_start(msg: types.Message):
@@ -1236,6 +1230,19 @@ async def check_open_trades():
 # === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
 # ===============================================
 
+# [دالة جديدة للتحقق من العطلة]
+def is_weekend_closure():
+    """التحقق مما إذا كان إغلاق عطلة نهاية الأسبوع (لتجنب التنبيهات)."""
+    # استخدام UTC كمرجع عالمي
+    now_utc = datetime.now(timezone.utc) 
+    weekday = now_utc.weekday() 
+    
+    # 5: السبت | 6: الأحد (عطلة نهاية الأسبوع)
+    if weekday == 5 or weekday == 6:
+        return True
+    return False 
+
+
 async def send_analysis_alert():
     
     alert_messages = [
@@ -1263,9 +1270,17 @@ async def scheduled_tasks():
         await asyncio.sleep(TRADE_CHECK_INTERVAL)
         
 async def monitor_market_continously():
-    await asyncio.sleep(60)
+    """مهمة إرسال تنبيهات المراقبة بشكل دوري (مع التحقق من حالة السوق)."""
+    await asyncio.sleep(60) # يبدأ بعد دقيقة من تشغيل البوت
     while True:
-        await send_analysis_alert()
+        # [الإضافة هنا]
+        if not is_weekend_closure():
+            await send_analysis_alert()
+        else:
+            # رسالة إلى اللوغ فقط
+            print("🤖 السوق مغلق (عطلة نهاية الأسبوع)، تم إيقاف تنبيهات المراقبة.")
+            
+        # يستخدم ALERT_INTERVAL (ساعة واحدة افتراضياً)
         await asyncio.sleep(ALERT_INTERVAL) 
 
 
