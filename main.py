@@ -8,12 +8,12 @@ import schedule
 import random
 import uuid
 
-from datetime import datetime, timedelta, timezone # **[تعديل]: إضافة timezone للاستخدام في دوال الإدارة المالية**
+from datetime import datetime, timedelta, timezone 
 from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton # **[تعديل]: إضافة InlineKeyboardMarkup**
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton 
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -27,7 +27,6 @@ class AdminStates(StatesGroup):
     waiting_ban = State()
     waiting_unban = State()
     waiting_key_days = State() 
-    # [إضافات جديدة لإدارة الأداء الشخصي]
     waiting_new_capital = State() 
     waiting_trade_result_input = State()
     waiting_trade_pnl = State()
@@ -38,16 +37,16 @@ class UserStates(StatesGroup):
 # =============== إعداد البوت والمتغيرات (من Environment Variables) ===============
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
-TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "GC=F") # الذهب للعامة
+TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "GC=F") # الرمز الفعلي للتحليل (يظل GC=F)
 # [إضافة متطلباتك الشخصية]
-ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "GC=F") # الرمز الخاص هو الذهب
-ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) # رأس مالك الأولي: $100
-ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) # مخاطرة: 2% لكل صفقة
+ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "GC=F") # الرمز الخاص يظل GC=F
+ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
+ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) 
 
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.90"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) # فاصل متابعة الصفقات بالثواني
-ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "3600")) # فاصل تنبيهات المراقبة بالسواني (ساعة = 3600)
+ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) # **[تعديل]: فاصل تنبيهات المراقبة (4 ساعات = 14400 ثانية)**
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
@@ -493,8 +492,11 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         data_1m = yf.download(symbol, period="2d", interval="1m", progress=False, auto_adjust=True)
         data_5m = yf.download(symbol, period="7d", interval="5m", progress=False, auto_adjust=True)
         
+        # **[تعديل]: نستخدم XAUUSD للعرض بدلاً من المتغيرات**
+        DISPLAY_SYMBOL = "XAUUSD" 
+        
         if data_1m.empty or len(data_1m) < 50 or data_5m.empty or len(data_5m) < 20: 
-            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {symbol}.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
+            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
         # HTF Trend (5m)
         data_5m['EMA_10'] = data_5m['Close'].ewm(span=10, adjust=False).mean()
@@ -537,7 +539,7 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         entry_price = latest_price
         stop_loss = 0.0
         take_profit = 0.0
-        stop_loss_distance = 0.0 # **القيمة الجديدة التي يجب إرجاعها**
+        stop_loss_distance = 0.0 
 
         if current_atr < MIN_ATR_THRESHOLD:
             return f"⚠️ السوق هادئ جداً (ATR: {current_atr:.2f} < {MIN_ATR_THRESHOLD}). الإشارة HOLD.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
@@ -578,21 +580,21 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
                 stop_loss = entry_price + risk_amount
                 take_profit = entry_price - (risk_amount * TP_FACTOR)
                 
-            stop_loss_distance = abs(entry_price - stop_loss) # **حساب المسافة**
+            stop_loss_distance = abs(entry_price - stop_loss) 
         
-        price_msg = f"📊 آخر سعر لـ <b>{symbol}</b> (الاتجاه الأكبر: {htf_trend}):\nالسعر: ${latest_price:,.2f}\nالوقت: {latest_time} UTC"
+        # **[تعديل]: عرض XAUUSD فقط**
+        price_msg = f"📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (الاتجاه الأكبر: {htf_trend}):\nالسعر: ${latest_price:,.2f}\nالوقت: {latest_time} UTC"
         
-        # **إضافة stop_loss_distance إلى القيمة المرجعة**
         return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance 
         
     except Exception as e:
-        return f"❌ فشل في جلب بيانات التداول لـ {symbol} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
+        # **[تعديل]: عرض XAUUSD فقط**
+        return f"❌ فشل في جلب بيانات التداول لـ {DISPLAY_SYMBOL} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
 # =============== دالة إرسال الإشارة (مع تحديث ليتوافق مع الدالة الجديدة) ===============
 
 async def send_trade_signal(admin_triggered=False):
     
-    # [تحديث] استقبال 7 قيم بدلاً من 6
     price_info_msg_ar, confidence, action, entry_price, stop_loss, take_profit, sl_distance = get_signal_and_confidence(TRADE_SYMBOL) 
     
     confidence_percent = confidence * 100
@@ -605,16 +607,16 @@ async def send_trade_signal(admin_triggered=False):
     trade_action_en = "BUY" if action == "BUY" else "SELL"
     
     trade_msg = f"""
-{signal_emoji} <b>VIP TRADE SIGNAL - GOLD (XAUUSD Proxy)</b> {signal_emoji}
+{signal_emoji} <b>VIP TRADE SIGNAL - GOLD (XAUUSD)</b> {signal_emoji} 
 ━━━━━━━━━━━━━━━
-📈 **PAIR:** XAUUSD
+📈 **PAIR:** XAUUSD 👈 **[تعديل]: عرض XAUUSD**
 🔥 **ACTION:** {trade_action_en} (Market Execution)
 💰 **ENTRY:** ${entry_price:,.2f}
 🎯 **TARGET (TP):** ${take_profit:,.2f}
 🛑 **STOP LOSS (SL):** ${stop_loss:,.2f}
 🔒 **SUCCESS RATE:** {confidence_percent:.2f}%
 
-<i>Trade responsibly. This signal is based on {TRADE_SYMBOL} Smart Multi-Filter Analysis (EMA, RSI, ATR, HTF).</i>
+<i>Trade responsibly. This signal is based on XAUUSD Smart Multi-Filter Analysis (EMA, RSI, ATR, HTF).</i>
 """
     sent = 0
     all_users = get_all_users_ids()
@@ -641,7 +643,7 @@ async def send_trade_signal(admin_triggered=False):
             
     return True
                 
-# =============== القوائم المُعدَّلة (إضافة الأزرار الجديدة للأدمن) ===============
+# =============== القوائم المُعدَّلة (إضافة الأزرار الجديدة للأدمن) - لا تغيير ===============
 
 def user_menu():
     return ReplyKeyboardMarkup(
@@ -657,10 +659,8 @@ def user_menu():
 def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            # [إضافة الأزرار الجديدة]
             [KeyboardButton(text="تحليل خاص (VIP) 👤"), KeyboardButton(text="تقرير الأداء الأسبوعي 📊")],
             [KeyboardButton(text="تسجيل نتيجة صفقة 📝"), KeyboardButton(text="تعديل رأس المال 💵")],
-            # الأزرار الأصلية
             [KeyboardButton(text="تحليل فوري ⚡️"), KeyboardButton(text="📊 جرد الصفقات اليومي")],
             [KeyboardButton(text="📢 رسالة لكل المستخدمين"), KeyboardButton(text="🔑 إنشاء مفتاح اشتراك")],
             [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء حظر مستخدم")],
@@ -697,16 +697,16 @@ async def process_new_capital(msg: types.Message, state: FSMContext):
 @dp.message(F.text == "تحليل خاص (VIP) 👤")
 async def analyze_private_pair(msg: types.Message):
     if msg.from_user.id != ADMIN_ID: await msg.answer("🚫 هذه الميزة خاصة بالإدمن."); return
-    await msg.reply(f"⏳ جارٍ تحليل الزوج الخاص: **{ADMIN_TRADE_SYMBOL}** (الذهب)...")
+    # **[تعديل]: عرض XAUUSD بدلاً من ADMIN_TRADE_SYMBOL**
+    await msg.reply(f"⏳ جارٍ تحليل الزوج الخاص: **XAUUSD** (الذهب)...")
     
-    # [تعديل] استقبال 7 قيم
     price_info_msg, confidence, action, entry, sl, tp, sl_distance = get_signal_and_confidence(ADMIN_TRADE_SYMBOL)
     
     confidence_percent = confidence * 100
     current_capital = get_admin_financial_status()
     
     if action == "HOLD":
-        await msg.answer(f"💡 لا توجد إشارة واضحة (HOLD) على {ADMIN_TRADE_SYMBOL}.\nالثقة: {confidence_percent:.2f}%.\n{price_info_msg}", parse_mode="HTML")
+        await msg.answer(f"💡 لا توجد إشارة واضحة (HOLD) على XAUUSD.\nالثقة: {confidence_percent:.2f}%.\n{price_info_msg}", parse_mode="HTML")
         return
 
     # 1. حساب اللوت بناءً على $100 ومخاطرة 2%
@@ -716,7 +716,7 @@ async def analyze_private_pair(msg: types.Message):
     private_msg = f"""
 {('🟢' if action == 'BUY' else '🔴')} <b>YOUR PERSONAL TRADE - GOLD (XAUUSD)</b> {('🟢' if action == 'BUY' else '🔴')}
 ━━━━━━━━━━━━━━━
-📈 **PAIR:** XAUUSD ({ADMIN_TRADE_SYMBOL})
+📈 **PAIR:** XAUUSD 👈 **[تعديل]: عرض XAUUSD**
 🔥 **ACTION:** {action} (Market Execution)
 💰 **ENTRY:** ${entry:,.2f}
 🎯 **TARGET (TP):** ${tp:,.2f}
@@ -755,7 +755,7 @@ async def process_admin_trade_entry(call: types.CallbackQuery, state: FSMContext
     await state.set_state(AdminStates.waiting_trade_pnl)
     
     await call.message.edit_text(
-        f"✅ تم تأكيد دخولك صفقة {action} على {symbol} بحجم لوت: {lots:.2f}.\n\n"
+        f"✅ تم تأكيد دخولك صفقة {action} على XAUUSD بحجم لوت: {lots:.2f}.\n\n"
         "الآن، عند إغلاق الصفقة (ربح/خسارة)، أدخل **صافي الربح أو الخسارة بالدولار** (مثال: **+6.50** أو **-2.00**):"
     )
     await call.answer()
@@ -826,8 +826,11 @@ async def process_manual_trade_result(msg: types.Message, state: FSMContext):
         save_admin_trade_result(symbol, action, lots, pnl)
         new_capital = get_admin_financial_status()
         
+        # **[تعديل]: عرض XAUUSD في رسالة التأكيد (يمكن تركه GC=F لأنه إدخال يدوي)**
+        display_symbol = "XAUUSD" if symbol == "GC=F" else symbol
+        
         await msg.reply(
-            f"✅ تم تسجيل الصفقة اليدوية: {symbol} ({action})، PnL: ${pnl:,.2f}.\n"
+            f"✅ تم تسجيل الصفقة اليدوية: {display_symbol} ({action})، PnL: ${pnl:,.2f}.\n"
             f"💰 رأس مالك الحالي أصبح: **${new_capital:,.2f}**.",
             reply_markup=admin_menu()
         )
@@ -846,9 +849,10 @@ async def show_weekly_report(msg: types.Message):
 
 @dp.message(Command("start"))
 async def cmd_start(msg: types.Message):
+    # **[تعديل]: عرض XAUUSD بدلاً من TRADE_SYMBOL**
     welcome_msg = f"""
 🤖 <b>مرحبًا بك في AlphaTradeAI!</b>
-🚀 نظام ذكي يتابع سوق الذهب ({TRADE_SYMBOL}) بأربعة فلاتر تحليلية.
+🚀 نظام ذكي يتابع سوق الذهب (XAUUSD) بأربعة فلاتر تحليلية.
 اختر من القائمة 👇
 """
     await msg.reply(welcome_msg, reply_markup=user_menu())
@@ -873,14 +877,14 @@ async def analyze_market_now(msg: types.Message):
     if sent_successfully:
         await msg.answer("✅ تم إرسال صفقة VIP بنجاح إلى المشتركين.")
     else:
-        # [تعديل] استقبال 7 قيم
-        _, confidence, action, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
+        # **[تعديل]: عرض XAUUSD في رسالة عدم الإرسال**
+        price_info_msg, confidence, action, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
         confidence_percent = confidence * 100
         
         if action == "HOLD":
              await msg.answer("💡 لا توجد إشارة واضحة (HOLD). لم يتم إرسال صفقة.")
         else:
-             await msg.answer(f"⚠️ الإشارة موجودة ({action})، لكن نسبة الثقة {confidence_percent:.2f}% أقل من المطلوب ({int(CONFIDENCE_THRESHOLD*100)}%). لم يتم إرسال صفقة.")
+             await msg.answer(f"⚠️ الإشارة موجودة ({action}) على XAUUSD، لكن نسبة الثقة {confidence_percent:.2f}% أقل من المطلوب ({int(CONFIDENCE_THRESHOLD*100)}%). لم يتم إرسال صفقة.")
 
 @dp.message(F.text == "📊 جرد الصفقات اليومي")
 async def daily_inventory_report(msg: types.Message):
@@ -893,7 +897,6 @@ async def daily_inventory_report(msg: types.Message):
 
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
-    # [تعديل] استقبال 7 قيم
     price_info_msg, _, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
     await msg.reply(price_info_msg)
     
@@ -906,7 +909,8 @@ async def show_active_trades(msg: types.Message):
         await msg.reply("✅ لا توجد حاليًا أي صفقات VIP نشطة. انتظر إشارة قادمة!")
         return
     
-    report = "⏳ **قائمة الصفقات النشطة حالياً (VIP)**\n━━━━━━━━━━━━━━━"
+    # **[تعديل]: عرض XAUUSD**
+    report = "⏳ **قائمة الصفقات النشطة حالياً (XAUUSD)**\n━━━━━━━━━━━━━━━"
     
     for trade in active_trades:
         action = trade['action']
@@ -991,6 +995,7 @@ async def contact_support(msg: types.Message):
 
 @dp.message(F.text == "ℹ️ عن AlphaTradeAI")
 async def about_bot(msg: types.Message):
+    # **[تعديل]: عرض XAUUSD بدلاً من TRADE_SYMBOL**
     threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
     about_msg = f"""
 🚀 <b>AlphaTradeAI: ثورة التحليل الكمّي في تداول الذهب!</b> 🚀
@@ -1210,7 +1215,7 @@ async def check_open_trades():
             close_msg = f"""
 {result_emoji} <b>TRADE CLOSED!</b> {result_emoji}
 ━━━━━━━━━━━━━━━
-📈 **PAIR:** XAUUSD
+📈 **PAIR:** XAUUSD 👈 **[تعديل]: عرض XAUUSD**
 ➡️ **ACTION:** {action}
 🔒 **RESULT:** تم الإغلاق عند **{exit_status.replace('HIT_', '')}**!
 💰 **PRICE:** ${close_price:,.2f}
@@ -1230,10 +1235,8 @@ async def check_open_trades():
 # === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
 # ===============================================
 
-# [دالة جديدة للتحقق من العطلة]
 def is_weekend_closure():
     """التحقق مما إذا كان إغلاق عطلة نهاية الأسبوع (لتجنب التنبيهات)."""
-    # استخدام UTC كمرجع عالمي
     now_utc = datetime.now(timezone.utc) 
     weekday = now_utc.weekday() 
     
@@ -1244,12 +1247,12 @@ def is_weekend_closure():
 
 
 async def send_analysis_alert():
-    
+    # **[تعديل]: تعريب الجمل**
     alert_messages = [
-        "🔎 Scanning the Gold market... 🧐 Looking for a strong trading opportunity on XAUUSD.",
-        "⏳ Analyzing Gold data now... Please wait, a VIP trade signal might drop soon!",
-        "🤖 Smart Analyst is running... 💡 Evaluating current Multi-Filter patterns for a high-confidence trade.",
-        "📊 البوت يراقب تحركات الذهب الآن. ابق عينيك على الإشعارات."
+        "🕵️ محلل الذهب الذكي يعمل الآن! نراقب السوق بدقة فائقة بحثًا عن إشارة VIP.",
+        "⏳ جاري تدقيق البيانات اللحظية للذهب (XAUUSD). ترقبوا، فقد تصل إشارة تداول قوية قريباً!",
+        "💡 يُرجى الانتباه! محرك AlphaTradeAI يُقيّم الآن أنماط الفلترة المتعددة لفرصة ذات ثقة عالية.",
+        "📈 تركيز كامل على XAUUSD. البوت يتابع تحركات السعر، ونستعد لإطلاق صفقة حصرية."
     ]
     
     msg_to_send = random.choice(alert_messages)
@@ -1270,17 +1273,16 @@ async def scheduled_tasks():
         await asyncio.sleep(TRADE_CHECK_INTERVAL)
         
 async def monitor_market_continously():
-    """مهمة إرسال تنبيهات المراقبة بشكل دوري (مع التحقق من حالة السوق)."""
-    await asyncio.sleep(60) # يبدأ بعد دقيقة من تشغيل البوت
+    """مهمة إرسال تنبيهات المراقبة بشكل دوري (4 ساعات)."""
+    await asyncio.sleep(60) 
     while True:
-        # [الإضافة هنا]
+        
         if not is_weekend_closure():
             await send_analysis_alert()
         else:
-            # رسالة إلى اللوغ فقط
             print("🤖 السوق مغلق (عطلة نهاية الأسبوع)، تم إيقاف تنبيهات المراقبة.")
             
-        # يستخدم ALERT_INTERVAL (ساعة واحدة افتراضياً)
+        # يستخدم ALERT_INTERVAL (4 ساعات = 14400 ثانية)
         await asyncio.sleep(ALERT_INTERVAL) 
 
 
