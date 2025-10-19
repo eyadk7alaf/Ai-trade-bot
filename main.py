@@ -7,7 +7,7 @@ import yfinance as yf
 import schedule
 import random
 import uuid
-import ccxt # <=== تمت الإضافة
+import ccxt 
 
 from datetime import datetime, timedelta, timezone 
 from urllib.parse import urlparse
@@ -38,9 +38,10 @@ class UserStates(StatesGroup):
 # =============== إعداد البوت والمتغيرات (من Environment Variables) ===============
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
-TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAU/USD") # <=== تم تعديل الرمز ليكون XAU/USD لاستخدامه مع CCXT
-CCXT_EXCHANGE = os.getenv("CCXT_EXCHANGE", "binance") # <=== متغير جديد لتحديد منصة CCXT
-ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAU/USD") # <=== تم تعديل الرمز ليكون XAU/USD
+TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAU/USD") 
+# ************** التعديل هنا: تغيير المنصة الافتراضية لـ CCXT إلى OANDA **************
+CCXT_EXCHANGE = os.getenv("CCXT_EXCHANGE", "oanda") 
+ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAU/USD") 
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
 ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) 
 
@@ -434,28 +435,33 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
     return lot_size, asset_info
 
 # ===============================================
-# === دوال جلب البيانات الفورية (باستخدام ccxt) ===
+# === دوال جلب البيانات الفورية (باستخدام ccxt - تم تعديل الاحتياطي) ===
 # ===============================================
 
 def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
     """
     تجلب بيانات الشموع (OHLCV) للرمز والفاصل الزمني المحدد باستخدام ccxt.
-    تستخدم YFinance كاحتياطي فقط في حال فشل الاتصال بـ CCXT.
+    **تم إلغاء الاحتياطي على YFinance للتحليل بسبب عدم دقة سعره.**
     """
     if symbol != "XAU/USD":
+        # يستخدم لرموز أخرى غير XAU/USD
         try:
             return yf.download(symbol, period="7d", interval=timeframe.replace('m', 'min'), progress=False, auto_adjust=True)
         except:
              return pd.DataFrame()
 
     try:
+        # 1. محاولة جلب البيانات من CCXT
         exchange = getattr(ccxt, CCXT_EXCHANGE)()
         exchange.load_markets()
         
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        # تحويل الفاصل الزمني للتوافق مع CCXT إذا لزم الأمر
+        ccxt_timeframe = timeframe.replace('m', '1m') # افتراض أن 1m, 5m متوافقة
+        
+        ohlcv = exchange.fetch_ohlcv(symbol, ccxt_timeframe, limit=limit)
         
         if not ohlcv:
-            raise Exception("No data from CCXT")
+            raise Exception(f"No OHLCV data from CCXT for {symbol}")
 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -465,28 +471,23 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
         return df
         
     except Exception as e:
-        print(f"⚠️ فشل جلب بيانات {symbol} من {CCXT_EXCHANGE} ({e}). العودة إلى YFinance (GC=F).")
-        try:
-            # نستخدم GC=F كاحتياطي لـ YFinance
-            data = yf.download("GC=F", period="7d", interval=timeframe.replace('m', 'min'), progress=False, auto_adjust=True)
-            return data
-        except:
-            return pd.DataFrame()
+        # ************** التغيير: لم نعد نعتمد على GC=F في التحليل **************
+        print(f"❌ فشل جلب بيانات التحليل (OHLCV) من {CCXT_EXCHANGE} ({e}).")
+        return pd.DataFrame()
 
 def fetch_current_price_ccxt(symbol: str) -> float or None:
     """جلب السعر الحالي الفوري لرمز XAU/USD."""
     try:
+        # 1. محاولة جلب السعر من CCXT
         exchange = getattr(ccxt, CCXT_EXCHANGE)()
         exchange.load_markets()
         ticker = exchange.fetch_ticker(symbol)
         return ticker['last']
+        
     except Exception as e:
-        # احتياطي لـ YFinance
-        try:
-             data = yf.download("GC=F", period="1m", interval="1m", progress=False, auto_adjust=True)
-             return data['Close'].iloc[-1].item()
-        except:
-             return None
+        # ************** التغيير: لم نعد نعتمد على GC=F للسعر اللحظي **************
+        print(f"❌ فشل جلب السعر اللحظي من CCXT ({CCXT_EXCHANGE}): {e}. لم يتم العودة إلى YFinance (GC=F).")
+        return None
 
 # =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) - لا تغيير ===============
 class AccessMiddleware(BaseMiddleware):
@@ -544,8 +545,9 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         
         DISPLAY_SYMBOL = "XAUUSD" 
         
+        # ************** شرط البيانات الكافية **************
         if data_1m.empty or len(data_1m) < 50 or data_5m.empty or len(data_5m) < 20: 
-            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
+            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}. (المصدر: {CCXT_EXCHANGE})", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
         # HTF Trend (5m)
         data_5m['EMA_10'] = data_5m['Close'].ewm(span=10, adjust=False).mean()
@@ -631,7 +633,7 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
                 
             stop_loss_distance = abs(entry_price - stop_loss) 
         
-        price_msg = f"📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (الاتجاه الأكبر: {htf_trend}):\nالسعر: ${latest_price:,.2f}\nالوقت: {latest_time} UTC"
+        price_msg = f"📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {CCXT_EXCHANGE}، الاتجاه الأكبر: {htf_trend}):\nالسعر: ${latest_price:,.2f}\nالوقت: {latest_time} UTC"
         
         return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance 
         
@@ -936,7 +938,8 @@ async def daily_inventory_report(msg: types.Message):
 
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
-    price_info_msg, _, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
+    # نستخدم دالة التحليل لأنها تتضمن منطق التعامل مع عدم توفر البيانات
+    price_info_msg, _, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL) 
     await msg.reply(price_info_msg)
     
 @dp.message(F.text == "🔍 الصفقات النشطة")
@@ -1215,7 +1218,8 @@ async def check_open_trades():
         if current_price is None:
              raise Exception("Failed to fetch price.")
     except Exception as e:
-        print(f"❌ فشل في جلب سعر السوق الحالي: {e}")
+        # ⚠️ ملاحظة: هذا الخطأ يظهر في الـ Logs فقط ولا يرسل رسالة للمستخدم
+        print(f"❌ فشل في جلب سعر السوق الحالي لمتابعة الصفقات: {e}")
         return
 
     closed_count = 0
@@ -1279,7 +1283,10 @@ def is_weekend_closure():
     now_utc = datetime.now(timezone.utc) 
     weekday = now_utc.weekday() 
     
-    if weekday == 5 or weekday == 6:
+    # 5 هو السبت، 6 هو الأحد
+    # التداول الفعلي يغلق حوالي 21:00 بتوقيت UTC يوم الجمعة (4) ويفتح 21:00 بتوقيت UTC يوم الأحد (6)
+    # نترك التحقق على السبت والأحد لضمان عدم إرسال تنبيهات المراقبة خلال فترة الإغلاق الطويلة.
+    if weekday == 5 or (weekday == 6 and now_utc.hour < 21): 
         return True
     return False 
 
