@@ -1,5 +1,6 @@
-aiogram>=3.4.0  # (أو الإصدار الأحدث)
+Aiogram>=3.4.0
 yfinance
 schedule
 pandas
 psycopg2-binary
+ccxt
