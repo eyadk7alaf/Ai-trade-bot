@@ -39,7 +39,7 @@ class UserStates(StatesGroup):
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
 TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAU/USD") 
-# ************** التعديل هنا: تغيير المنصة الافتراضية لـ CCXT إلى OANDA **************
+# ************** منصة CCXT الجديدة **************
 CCXT_EXCHANGE = os.getenv("CCXT_EXCHANGE", "oanda") 
 ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAU/USD") 
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
@@ -66,14 +66,13 @@ bot = Bot(token=BOT_TOKEN,
           
 dp = Dispatcher(storage=MemoryStorage())
 
-# =============== قاعدة بيانات PostgreSQL (مع تحديث جدول الأداء) ===============
+# =============== قاعدة بيانات PostgreSQL ===============
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("🚫 لم يتم العثور على DATABASE_URL. يرجى التأكد من ربط PostgreSQL بـ Railway.")
 
 def get_db_connection():
     try:
-        # تحليل URL قاعدة البيانات (لضمان التوافق مع تنسيقات الاستضافة)
         url = urlparse(DATABASE_URL)
         return psycopg2.connect(
             database=url.path[1:],
@@ -323,7 +322,7 @@ def get_daily_trade_report():
 
     return report_msg
 
-# =============== دوال إدارة الأداء الشخصي (جديدة) ===============
+# =============== دوال إدارة الأداء الشخصي ===============
 def get_admin_financial_status():
     conn = get_db_connection()
     if conn is None: return ADMIN_CAPITAL_DEFAULT
@@ -435,61 +434,69 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
     return lot_size, asset_info
 
 # ===============================================
-# === دوال جلب البيانات الفورية (باستخدام ccxt - تم تعديل الاحتياطي) ===
+# === دوال جلب البيانات الفورية (الاستراتيجية الهجينة - التعديل النهائي) ===
 # ===============================================
 
 def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
     """
-    تجلب بيانات الشموع (OHLCV) للرمز والفاصل الزمني المحدد باستخدام ccxt.
-    **تم إلغاء الاحتياطي على YFinance للتحليل بسبب عدم دقة سعره.**
+    تجلب بيانات الشموع (OHLCV) للرمز والفاصل الزمني المحدد.
+    الأولوية لـ CCXT، ثم العودة لـ YFinance لجلب البيانات التاريخية اللازمة للتحليل.
     """
-    if symbol != "XAU/USD":
-        # يستخدم لرموز أخرى غير XAU/USD
-        try:
-            return yf.download(symbol, period="7d", interval=timeframe.replace('m', 'min'), progress=False, auto_adjust=True)
-        except:
-             return pd.DataFrame()
-
+    YF_FALLBACK_SYMBOL = "GC=F" # رمز العقود الآجلة للذهب في YFinance
+    
+    # 1. محاولة جلب البيانات من CCXT (OANDA)
     try:
-        # 1. محاولة جلب البيانات من CCXT
         exchange = getattr(ccxt, CCXT_EXCHANGE)()
         exchange.load_markets()
-        
-        # تحويل الفاصل الزمني للتوافق مع CCXT إذا لزم الأمر
-        ccxt_timeframe = timeframe.replace('m', '1m') # افتراض أن 1m, 5m متوافقة
-        
+        ccxt_timeframe = timeframe.replace('m', '1m') # تحويل الفاصل الزمني
         ohlcv = exchange.fetch_ohlcv(symbol, ccxt_timeframe, limit=limit)
         
-        if not ohlcv:
-            raise Exception(f"No OHLCV data from CCXT for {symbol}")
+        # إذا جلب CCXT بيانات كافية (نعتبرها كافية للتحليل)
+        if ohlcv and len(ohlcv) >= 50: 
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            return df
+        
+        # إذا كانت البيانات قليلة، ننتقل إلى الاحتياطي
+        raise Exception("CCXT returned insufficient data for analysis.")
 
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        
-        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-        return df
-        
     except Exception as e:
-        # ************** التغيير: لم نعد نعتمد على GC=F في التحليل **************
-        print(f"❌ فشل جلب بيانات التحليل (OHLCV) من {CCXT_EXCHANGE} ({e}).")
-        return pd.DataFrame()
+        # 2. الاحتياطي: العودة إلى YFinance لجلب البيانات التاريخية للتحليل (GC=F)
+        print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}). العودة إلى YFinance ({YF_FALLBACK_SYMBOL}).")
+        
+        # تحويل الفاصل الزمني للتوافق مع YFinance
+        yf_interval = timeframe.replace('m', 'min') 
+        
+        try:
+            # نطلب فترة كبيرة (مثل 7 أيام) لضمان الحصول على 200 شمعة
+            df = yf.download(YF_FALLBACK_SYMBOL, period="7d", interval=yf_interval, progress=False, auto_adjust=True)
+            
+            if df.empty or len(df) < 50:
+                 raise Exception("YFinance returned insufficient data.")
+                 
+            # نأخذ فقط آخر N شمعة مطلوبة
+            return df.tail(limit)
+            
+        except Exception as yf_e:
+            print(f"❌ فشل جلب بيانات التحليل OHLCV من YFinance أيضاً: {yf_e}")
+            return pd.DataFrame()
 
 def fetch_current_price_ccxt(symbol: str) -> float or None:
-    """جلب السعر الحالي الفوري لرمز XAU/USD."""
+    """جلب السعر الحالي الفوري لرمز XAU/USD (الأولوية القصوى لـ CCXT للدقة)."""
     try:
-        # 1. محاولة جلب السعر من CCXT
         exchange = getattr(ccxt, CCXT_EXCHANGE)()
         exchange.load_markets()
         ticker = exchange.fetch_ticker(symbol)
-        return ticker['last']
+        # نستخدم سعر البيع (Ask) لضمان دقة التنفيذ الفوري
+        return ticker['ask'] if 'ask' in ticker and ticker['ask'] is not None else ticker['last']
         
     except Exception as e:
-        # ************** التغيير: لم نعد نعتمد على GC=F للسعر اللحظي **************
-        print(f"❌ فشل جلب السعر اللحظي من CCXT ({CCXT_EXCHANGE}): {e}. لم يتم العودة إلى YFinance (GC=F).")
+        print(f"❌ فشل جلب السعر اللحظي من CCXT ({CCXT_EXCHANGE}): {e}.")
         return None
 
-# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) - لا تغيير ===============
+# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) ===============
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
         self, handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -532,14 +539,13 @@ class AccessMiddleware(BaseMiddleware):
 
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل (إضافة مسافة الوقف) ===============
+# =============== وظائف التداول والتحليل (تم تعديل نقطة الدخول والمصدر) ===============
 
 def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float, float]:
     """
     تحليل ذكي باستخدام 4 فلاتر (EMA 1m, RSI, ATR, EMA 5m) لتحديد إشارة فائقة القوة.
     """
     try:
-        # **[تعديل]: استخدام الدالة الجديدة التي تعتمد على CCXT لجلب البيانات الفورية**
         data_1m = fetch_ohlcv_data(symbol, "1m", limit=200)
         data_5m = fetch_ohlcv_data(symbol, "5m", limit=200)
         
@@ -547,8 +553,19 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         
         # ************** شرط البيانات الكافية **************
         if data_1m.empty or len(data_1m) < 50 or data_5m.empty or len(data_5m) < 20: 
-            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}. (المصدر: {CCXT_EXCHANGE})", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
+            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}. (المصدر: {CCXT_EXCHANGE} أو GC=F)", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
+        # ************** جلب السعر اللحظي (للتنفيذ الدقيق) **************
+        current_spot_price = fetch_current_price_ccxt(symbol)
+        price_source = CCXT_EXCHANGE
+        
+        if current_spot_price is None:
+            # في أسوأ الأحوال، نستخدم سعر الشمعة المغلقة من البيانات التاريخية
+            current_spot_price = data_1m['Close'].iloc[-1].item()
+            price_source = "تحليل (GC=F)"
+            
+        entry_price = current_spot_price # نقطة الدخول هي السعر اللحظي الأكثر دقة
+        
         # HTF Trend (5m)
         data_5m['EMA_10'] = data_5m['Close'].ewm(span=10, adjust=False).mean()
         data_5m['EMA_30'] = data_5m['Close'].ewm(span=30, adjust=False).mean()
@@ -571,7 +588,6 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         data['ATR'] = tr.rolling(14).mean()
 
-        latest_price = data['Close'].iloc[-1].item() 
         latest_time = data.index[-1].strftime('%Y-%m-%d %H:%M:%S')
         ema_fast_prev = data['EMA_5'].iloc[-2]
         ema_slow_prev = data['EMA_20'].iloc[-2]
@@ -587,7 +603,6 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
 
         action = "HOLD"
         confidence = 0.5
-        entry_price = latest_price
         stop_loss = 0.0
         take_profit = 0.0
         stop_loss_distance = 0.0 
@@ -633,14 +648,15 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
                 
             stop_loss_distance = abs(entry_price - stop_loss) 
         
-        price_msg = f"📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {CCXT_EXCHANGE}، الاتجاه الأكبر: {htf_trend}):\nالسعر: ${latest_price:,.2f}\nالوقت: {latest_time} UTC"
+        # ************** رسالة العرض تظهر مصدر السعر الفعلي **************
+        price_msg = f"📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {price_source}، الاتجاه الأكبر: {htf_trend}):\nالسعر: ${entry_price:,.2f}\nالوقت: {latest_time} UTC"
         
         return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance 
         
     except Exception as e:
         return f"❌ فشل في جلب بيانات التداول لـ {DISPLAY_SYMBOL} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
-# =============== دالة إرسال الإشارة (مع تحديث ليتوافق مع الدالة الجديدة) ===============
+# =============== دالة إرسال الإشارة ===============
 
 async def send_trade_signal(admin_triggered=False):
     
@@ -691,7 +707,7 @@ async def send_trade_signal(admin_triggered=False):
             
     return True
                 
-# =============== القوائم المُعدَّلة (إضافة الأزرار الجديدة للأدمن) - لا تغيير ===============
+# =============== القوائم المُعدَّلة ===============
 
 def user_menu():
     return ReplyKeyboardMarkup(
@@ -718,7 +734,7 @@ def admin_menu():
         resize_keyboard=True
     )
 
-# =============== أوامر الأدمن الإضافية للميزات الشخصية (جديدة) ===============
+# =============== أوامر الأدمن الإضافية للميزات الشخصية ===============
 
 @dp.message(F.text == "تعديل رأس المال 💵")
 async def prompt_new_capital(msg: types.Message, state: FSMContext):
@@ -938,7 +954,6 @@ async def daily_inventory_report(msg: types.Message):
 
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
-    # نستخدم دالة التحليل لأنها تتضمن منطق التعامل مع عدم توفر البيانات
     price_info_msg, _, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL) 
     await msg.reply(price_info_msg)
     
@@ -1213,12 +1228,10 @@ async def check_open_trades():
         return
 
     try:
-        # **[تعديل]: استخدام الدالة الجديدة التي تعتمد على CCXT**
         current_price = fetch_current_price_ccxt(TRADE_SYMBOL)
         if current_price is None:
              raise Exception("Failed to fetch price.")
     except Exception as e:
-        # ⚠️ ملاحظة: هذا الخطأ يظهر في الـ Logs فقط ولا يرسل رسالة للمستخدم
         print(f"❌ فشل في جلب سعر السوق الحالي لمتابعة الصفقات: {e}")
         return
 
@@ -1283,9 +1296,7 @@ def is_weekend_closure():
     now_utc = datetime.now(timezone.utc) 
     weekday = now_utc.weekday() 
     
-    # 5 هو السبت، 6 هو الأحد
     # التداول الفعلي يغلق حوالي 21:00 بتوقيت UTC يوم الجمعة (4) ويفتح 21:00 بتوقيت UTC يوم الأحد (6)
-    # نترك التحقق على السبت والأحد لضمان عدم إرسال تنبيهات المراقبة خلال فترة الإغلاق الطويلة.
     if weekday == 5 or (weekday == 6 and now_utc.hour < 21): 
         return True
     return False 
