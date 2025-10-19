@@ -39,7 +39,6 @@ class UserStates(StatesGroup):
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
 TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAU/USD") 
-# ************** منصة CCXT الجديدة **************
 CCXT_EXCHANGE = os.getenv("CCXT_EXCHANGE", "oanda") 
 ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAU/USD") 
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
@@ -414,7 +413,7 @@ def generate_weekly_performance_report():
 # =============== دالة حساب حجم اللوت (مُخصَّصة للأدمن) ===============
 def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tuple[float, str]:
     """
-    يحسب حجم اللوت المناسب بناءً على رأس مال الأدمن ($100) والمخاطرة (2%).
+    يحسب حجم اللوت المناسب بناءً على رأس مال الأدمن والمخاطرة (2%).
     """
     
     capital = get_admin_financial_status() 
@@ -470,13 +469,15 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
         yf_interval = timeframe.replace('m', 'min') 
         
         try:
-            # نطلب فترة كبيرة (مثل 7 أيام) لضمان الحصول على 200 شمعة
-            df = yf.download(YF_FALLBACK_SYMBOL, period="7d", interval=yf_interval, progress=False, auto_adjust=True)
+            # *[التعديل النهائي]* نطلب فترة كبيرة (60 يوماً) لضمان الحصول على 200 شمعة دقيقة/5د تاريخية فور فتح السوق
+            period_setting = "60d" 
+            
+            df = yf.download(YF_FALLBACK_SYMBOL, period=period_setting, interval=yf_interval, progress=False, auto_adjust=True)
             
             if df.empty or len(df) < 50:
                  raise Exception("YFinance returned insufficient data.")
                  
-            # نأخذ فقط آخر N شمعة مطلوبة
+            # نأخذ فقط آخر N شمعة مطلوبة (200 شمعة)
             return df.tail(limit)
             
         except Exception as yf_e:
@@ -552,7 +553,8 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         DISPLAY_SYMBOL = "XAUUSD" 
         
         # ************** شرط البيانات الكافية **************
-        if data_1m.empty or len(data_1m) < 50 or data_5m.empty or len(data_5m) < 20: 
+        # نطلب 200 شمعة دقيقة و 200 شمعة 5 دقائق (40 شمعة 5 دقائق على الأقل)
+        if data_1m.empty or len(data_1m) < 200 or data_5m.empty or len(data_5m) < 40: 
             return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}. (المصدر: {CCXT_EXCHANGE} أو GC=F)", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
         # ************** جلب السعر اللحظي (للتنفيذ الدقيق) **************
@@ -656,57 +658,6 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
     except Exception as e:
         return f"❌ فشل في جلب بيانات التداول لـ {DISPLAY_SYMBOL} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
-# =============== دالة إرسال الإشارة ===============
-
-async def send_trade_signal(admin_triggered=False):
-    
-    price_info_msg_ar, confidence, action, entry_price, stop_loss, take_profit, sl_distance = get_signal_and_confidence(TRADE_SYMBOL) 
-    
-    confidence_percent = confidence * 100
-    is_high_confidence = confidence >= CONFIDENCE_THRESHOLD
-
-    if not is_high_confidence or action == "HOLD":
-        return False
-
-    signal_emoji = "🟢" if action == "BUY" else "🔴"
-    trade_action_en = "BUY" if action == "BUY" else "SELL"
-    
-    trade_msg = f"""
-{signal_emoji} <b>VIP TRADE SIGNAL - GOLD (XAUUSD)</b> {signal_emoji} 
-━━━━━━━━━━━━━━━
-📈 **PAIR:** XAUUSD 
-🔥 **ACTION:** {trade_action_en} (Market Execution)
-💰 **ENTRY:** ${entry_price:,.2f}
-🎯 **TARGET (TP):** ${take_profit:,.2f}
-🛑 **STOP LOSS (SL):** ${stop_loss:,.2f}
-🔒 **SUCCESS RATE:** {confidence_percent:.2f}%
-
-<i>Trade responsibly. This signal is based on XAUUSD Smart Multi-Filter Analysis (EMA, RSI, ATR, HTF).</i>
-"""
-    sent = 0
-    all_users = get_all_users_ids()
-    
-    for uid, is_banned_status in all_users:
-        if is_banned_status == 0 and uid != ADMIN_ID and is_user_vip(uid):
-            try:
-                await bot.send_message(uid, trade_msg)
-                sent += 1
-            except Exception:
-                pass
-    
-    trade_id = None
-    if sent > 0:
-        trade_id = save_new_trade(trade_action_en, entry_price, take_profit, stop_loss, sent)
-    
-    if ADMIN_ID != 0:
-        try:
-            admin_note = "تم الإرسال عبر الأمر الفوري" if admin_triggered else "إرسال مجدول"
-            await bot.send_message(ADMIN_ID, f"📢 تم إرسال صفقة VIP ({trade_action_en}) إلى {sent} مشترك.\nالثقة: {confidence_percent:.2f}%.\n**Trade ID:** {trade_id}\nملاحظة: {admin_note}")
-        except Exception:
-            pass
-            
-    return True
-                
 # =============== القوائم المُعدَّلة ===============
 
 def user_menu():
