@@ -43,15 +43,20 @@ ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAUT/USDT")
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
 ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) 
 
-# ⚠️ تم تعريف هذه المتغيرات في النطاق العام لحل مشكلة NameError ⚠️
-SL_FACTOR = 1.5  # معامل تحديد وقف الخسارة
-TP_FACTOR = 2.5  # معامل تحديد جني الأرباح (نسبة المخاطرة إلى العائد)
-# -----------------------------------------------------------------
+# ⚠️ المتغيرات العامة (معاملات تحديد نقاط الخروج والدخول - تم التحديث)
+SL_FACTOR = 1.8  # عامل وقف الخسارة (يضرب في ATR)
+SCALPING_RR_FACTOR = 2.5 # عامل R:R لصفقات الـ Scalping
+LONGTERM_RR_FACTOR = 3.5 # عامل R:R لصفقات الـ Long-Term
 
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.95")) # ⚠️ تم رفع القيمة هنا
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.98")) # تم رفع الثقة المطلوبة
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) 
 ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) 
 TRADE_ANALYSIS_INTERVAL = int(os.getenv("TRADE_ANALYSIS_INTERVAL", "60")) 
+
+# فلاتر ADX الجديدة (تم التحديث)
+ADX_SCALPING_MIN = 25
+ADX_LONGTERM_MIN = 20
+BB_PROXIMITY_THRESHOLD = 0.5 
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 
@@ -99,7 +104,7 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username VARCHAR(255), joined_at DOUBLE PRECISION, is_banned INTEGER DEFAULT 0, vip_until DOUBLE PRECISION DEFAULT 0.0);
         CREATE TABLE IF NOT EXISTS invite_keys (key VARCHAR(255) PRIMARY KEY, days INTEGER, created_by BIGINT, used_by BIGINT NULL, used_at DOUBLE PRECISION NULL);
-        CREATE TABLE IF NOT EXISTS trades (trade_id TEXT PRIMARY KEY, sent_at DOUBLE PRECISION, action VARCHAR(10), entry_price DOUBLE PRECISION, take_profit DOUBLE PRECISION, stop_loss DOUBLE PRECISION, status VARCHAR(50) DEFAULT 'ACTIVE', exit_status VARCHAR(50) DEFAULT 'NONE', close_price DOUBLE PRECISION NULL, user_count INTEGER);
+        CREATE TABLE IF NOT EXISTS trades (trade_id TEXT PRIMARY KEY, sent_at DOUBLE PRECISION, action VARCHAR(10), entry_price DOUBLE PRECISION, take_profit DOUBLE PRECISION, stop_loss DOUBLE PRECISION, status VARCHAR(50) DEFAULT 'ACTIVE', exit_status VARCHAR(50) DEFAULT 'NONE', close_price DOUBLE PRECISION NULL, user_count INTEGER, trade_type VARCHAR(50) DEFAULT 'SCALPING');
         
         CREATE TABLE IF NOT EXISTS admin_performance (
             id SERIAL PRIMARY KEY,
@@ -244,16 +249,16 @@ def create_invite_key(admin_id, days):
     return key
 
 # === دوال إدارة الصفقات 
-def save_new_trade(action, entry, tp, sl, user_count):
+def save_new_trade(action, entry, tp, sl, user_count, trade_type):
     conn = get_db_connection()
     if conn is None: return None
     cursor = conn.cursor()
     trade_id = "TRADE-" + str(uuid.uuid4()).split('-')[0]
     
     cursor.execute("""
-        INSERT INTO trades (trade_id, sent_at, action, entry_price, take_profit, stop_loss, user_count)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (trade_id, time.time(), action, entry, tp, sl, user_count))
+        INSERT INTO trades (trade_id, sent_at, action, entry_price, take_profit, stop_loss, user_count, trade_type)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """, (trade_id, time.time(), action, entry, tp, sl, user_count, trade_type))
     
     conn.commit()
     conn.close()
@@ -264,13 +269,13 @@ def get_active_trades():
     if conn is None: return []
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT trade_id, action, entry_price, take_profit, stop_loss
+        SELECT trade_id, action, entry_price, take_profit, stop_loss, trade_type
         FROM trades 
         WHERE status = 'ACTIVE'
     """)
     trades = cursor.fetchall()
     conn.close()
-    keys = ["trade_id", "action", "entry_price", "take_profit", "stop_loss"]
+    keys = ["trade_id", "action", "entry_price", "take_profit", "stop_loss", "trade_type"]
     return [dict(zip(keys, trade)) for trade in trades]
 
 def update_trade_status(trade_id, exit_status, close_price):
@@ -416,7 +421,6 @@ def generate_weekly_performance_report():
         report += "\n\n⚠️ لم يتم تسجيل أي صفقات خاصة خلال هذه الفترة."
     return report
     
-# دالة حساب حجم اللوت (مُخصَّصة للأدمن) - تم الإبقاء عليها ولكنها غير مستخدمة الآن
 def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tuple[float, str]:
     """
     يحسب حجم اللوت المناسب بناءً على رأس مال الأدمن والمخاطرة (2%).
@@ -430,7 +434,6 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
         
     risk_amount = capital * risk_percent 
     
-    # الذهب: 1 لوت قياسي = 100 أوقية/وحدة. قيمة حركة $1 لـ 1 لوت هي $100.
     lot_size = risk_amount / (stop_loss_distance * 100) 
     
     lot_size = max(0.01, round(lot_size, 2))
@@ -439,7 +442,7 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
     return lot_size, asset_info
 
 # ===============================================
-# === دوال جلب البيانات الفورية (التعديل تم هنا) ===
+# === دوال جلب البيانات الفورية (بدون تغيير) ===
 # ===============================================
 
 def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
@@ -470,7 +473,7 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
             df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
             return df
         
-        raise Exception(f"CCXT ({CCXT_EXCHANGE}) returned insufficient data. Needed {limit}, got {len(ohlcv) if ohlcv else 0}.")
+        return pd.DataFrame()
 
     except Exception as e:
         print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}): {e}")
@@ -492,7 +495,6 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
              
         exchange.load_markets()
         ticker = exchange.fetch_ticker(symbol)
-        # نستخدم سعر البيع (Ask) لضمان دقة التنفيذ الفوري
         return ticker['ask'] if 'ask' in ticker and ticker['ask'] is not None else ticker['last']
         
     except Exception as e:
@@ -542,24 +544,56 @@ class AccessMiddleware(BaseMiddleware):
 
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل (تم تطبيق التعديلات هنا) ===============
+# =============== وظائف التداول والتحليل (تم تطبيق كل التعديلات هنا) ===============
 
-def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float, float]:
+def calculate_adx(df, window=14):
+    """حساب مؤشر ADX, +DI, و -DI."""
+    # True Range (TR)
+    df['tr'] = pd.concat([df['High'] - df['Low'], (df['High'] - df['Close'].shift()).abs(), (df['Low'] - df['Close'].shift()).abs()], axis=1).max(axis=1)
+    # Directional Movement (DM)
+    df['up'] = df['High'] - df['High'].shift()
+    df['down'] = df['Low'].shift() - df['Low']
+    df['+DM'] = df['up'].where((df['up'] > 0) & (df['up'] > df['down']), 0)
+    df['-DM'] = df['down'].where((df['down'] > 0) & (df['down'] > df['up']), 0)
+    
+    # Exponential smoothing of TR and DMs
+    def smooth(series, periods):
+        return series.ewm(com=periods - 1, adjust=False).mean()
+        
+    df['+DMS'] = smooth(df['+DM'], window)
+    df['-DMS'] = smooth(df['-DM'], window)
+    df['TRS'] = smooth(df['tr'], window)
+    
+    # Directional Indicators (DI)
+    df['+DI'] = (df['+DMS'] / df['TRS']) * 100
+    df['-DI'] = (df['-DMS'] / df['TRS']) * 100
+    
+    # Directional Index (DX) and Average Directional Index (ADX)
+    df['DX'] = (abs(df['+DI'] - df['-DI']) / (df['+DI'] + df['-DI'])).fillna(0) * 100
+    df['ADX'] = smooth(df['DX'], window)
+    
+    return df
+
+def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float, float, str]:
     """
-    تحليل ذكي باستخدام 4 فلاتر (EMA 1m, RSI, ATR, EMA 5m) لتحديد إشارة فائقة القوة.
+    تحليل مزدوج (Scalping / Long-Term) باستخدام 7 فلاتر لتحديد إشارة فائقة القوة.
+    النتيجة الإضافية: trade_type
     """
-    global SL_FACTOR, TP_FACTOR # ضمان استخدام القيم العامة المُصححة
+    global SL_FACTOR, SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR, ADX_SCALPING_MIN, ADX_LONGTERM_MIN, BB_PROXIMITY_THRESHOLD
     
     try:
-        # جلب بيانات الشموع
+        # جلب البيانات لجميع الأطر الزمنية المطلوبة
         data_1m = fetch_ohlcv_data(symbol, "1m", limit=200)
         data_5m = fetch_ohlcv_data(symbol, "5m", limit=200)
-        
+        data_15m = fetch_ohlcv_data(symbol, "15m", limit=200)
+        data_30m = fetch_ohlcv_data(symbol, "30m", limit=200)
+        data_1h = fetch_ohlcv_data(symbol, "1h", limit=200) # إضافة 1h
+
         DISPLAY_SYMBOL = "XAUUSD" 
         
         # ************** شرط البيانات الكافية **************
-        if data_1m.empty or len(data_1m) < 200 or data_5m.empty or len(data_5m) < 40: 
-            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}. (المصدر: {CCXT_EXCHANGE})", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
+        if data_1m.empty or data_5m.empty or data_15m.empty or data_30m.empty or data_1h.empty: 
+            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
 
         # ************** جلب السعر اللحظي **************
         current_spot_price = fetch_current_price_ccxt(symbol)
@@ -570,116 +604,217 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
             price_source = f"تحليل ({CCXT_EXCHANGE})" 
             
         entry_price = current_spot_price 
-        
-        # HTF Trend (5m)
-        data_5m['EMA_10'] = data_5m['Close'].ewm(span=10, adjust=False).mean()
-        data_5m['EMA_30'] = data_5m['Close'].ewm(span=30, adjust=False).mean()
-        htf_trend = "BULLISH" if data_5m['EMA_10'].iloc[-1] > data_5m['EMA_30'].iloc[-1] else "BEARISH"
-        
-        # LFT Analysis (1m)
-        data = data_1m 
-        data['EMA_5'] = data['Close'].ewm(span=5, adjust=False).mean()
-        data['EMA_20'] = data['Close'].ewm(span=20, adjust=False).mean()
-        
-        delta = data['Close'].diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
-        RS = gain.ewm(com=14-1, min_periods=14, adjust=False).mean() / loss.ewm(com=14-1, min_periods=14, adjust=False).mean().replace(0, 1e-10)
-        data['RSI'] = 100 - (100 / (1 + RS))
-        
-        high_low = data['High'] - data['Low']
-        high_close = (data['High'] - data['Close'].shift()).abs()
-        low_close = (data['Low'] - data['Close'].shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        data['ATR'] = tr.rolling(14).mean()
+        latest_time = data_1m.index[-1].strftime('%Y-%m-%d %H:%M:%S')
 
-        latest_time = data.index[-1].strftime('%Y-%m-%d %H:%M:%S')
-        ema_fast_prev = data['EMA_5'].iloc[-2]
-        ema_slow_prev = data['EMA_20'].iloc[-2]
-        ema_fast_current = data['EMA_5'].iloc[-1]
-        ema_slow_current = data['EMA_20'].iloc[-1]
-        current_rsi = data['RSI'].iloc[-1]
-        current_atr = data['ATR'].iloc[-1]
+        # === حساب المؤشرات على 1m (للسكالبينج)
+        data_1m['EMA_5'] = data_1m['Close'].ewm(span=5, adjust=False).mean()
+        data_1m['EMA_20'] = data_1m['Close'].ewm(span=20, adjust=False).mean()
+        
+        delta_1m = data_1m['Close'].diff()
+        gain_1m = delta_1m.where(delta_1m > 0, 0)
+        loss_1m = -delta_1m.where(delta_1m < 0, 0)
+        RS_1m = gain_1m.ewm(com=14-1, min_periods=14, adjust=False).mean() / loss_1m.ewm(com=14-1, min_periods=14, adjust=False).mean().replace(0, 1e-10)
+        data_1m['RSI'] = 100 - (100 / (1 + RS_1m))
+        
+        high_low = data_1m['High'] - data_1m['Low']
+        high_close = (data_1m['High'] - data_1m['Close'].shift()).abs()
+        low_close = (data_1m['Low'] - data_1m['Close'].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        data_1m['ATR'] = tr.rolling(14).mean()
+        
+        current_atr = data_1m['ATR'].iloc[-1]
+        current_rsi = data_1m['RSI'].iloc[-1]
         
         MIN_ATR_THRESHOLD = 0.5 
-        MIN_SL = 0.5 
-
-        action = "HOLD"
-        confidence = 0.5
-        stop_loss = 0.0
-        take_profit = 0.0
-        stop_loss_distance = 0.0 
-
-        if current_atr < MIN_ATR_THRESHOLD:
-            return f"⚠️ السوق هادئ جداً (ATR: {current_atr:.2f} < {MIN_ATR_THRESHOLD}). الإشارة HOLD.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
-            
-        is_buy_signal = (ema_fast_prev <= ema_slow_prev and ema_fast_current > ema_slow_current)
-        is_buy_trend = (ema_fast_current > ema_slow_current)
-        is_sell_signal = (ema_fast_prev >= ema_slow_prev and ema_fast_current < ema_slow_current)
-        is_sell_trend = (ema_fast_current < ema_slow_current)
-
-        if is_buy_signal or is_buy_trend:
-            if htf_trend == "BULLISH": 
-                action = "BUY"
-                if current_rsi > 50: 
-                    # إشارة قوية جداً (توافق كامل)
-                    confidence = 0.99 if is_buy_signal else 0.95
-                else:
-                    # ❌ (تشديد الشروط) رفض إذا كان RSI ضعيفاً (مخاطرة عالية)
-                    confidence = 0.0 
-            else:
-                # ❌ (تشديد الشروط) رفض إذا كان الاتجاه 5m معاكساً (صفقة تصحيح خطرة)
-                confidence = 0.0 
-                
-        elif is_sell_signal or is_sell_trend:
-            if htf_trend == "BEARISH": 
-                action = "SELL"
-                if current_rsi < 50:
-                    # إشارة قوية جداً (توافق كامل)
-                    confidence = 0.99 if is_sell_signal else 0.95
-                else:
-                    # ❌ (تشديد الشروط) رفض إذا كان RSI ضعيفاً (مخاطرة عالية)
-                    confidence = 0.0
-            else:
-                 # ❌ (تشديد الشروط) رفض إذا كان الاتجاه 5m معاكساً (صفقة تصحيح خطرة)
-                 confidence = 0.0
+        MIN_SL_DISTANCE = 0.5 
         
-        # يتم حساب الـ SL والـ TP فقط إذا كانت الثقة أكبر من الصفر
-        if action != "HOLD" and confidence > 0.0:
-            risk_amount = max(current_atr * SL_FACTOR, MIN_SL) 
+        if current_atr < MIN_ATR_THRESHOLD:
+            return f"⚠️ السوق هادئ جداً (ATR: {current_atr:.2f} < {MIN_ATR_THRESHOLD}). الإشارة HOLD.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
 
+        # === حساب المؤشرات على 5m (للفلاتر)
+        data_5m = calculate_adx(data_5m)
+        current_adx_5m = data_5m['ADX'].iloc[-1]
+        data_5m['EMA_10'] = data_5m['Close'].ewm(span=10, adjust=False).mean()
+        data_5m['EMA_30'] = data_5m['Close'].ewm(span=30, adjust=False).mean()
+        htf_trend_5m = "BULLISH" if data_5m['EMA_10'].iloc[-1] > data_5m['EMA_30'].iloc[-1] else "BEARISH"
+        data_5m['SMA_200'] = data_5m['Close'].rolling(window=200).mean() # فلتر SMA 200
+        latest_sma_200_5m = data_5m['SMA_200'].iloc[-1]
+        data_5m['BB_MA'] = data_5m['Close'].rolling(window=20).mean()
+        data_5m['BB_STD'] = data_5m['Close'].rolling(window=20).std()
+        data_5m['BB_UPPER'] = data_5m['BB_MA'] + (data_5m['BB_STD'] * 2)
+        data_5m['BB_LOWER'] = data_5m['BB_MA'] - (data_5m['BB_STD'] * 2)
+        latest_bb_lower_5m = data_5m['BB_LOWER'].iloc[-1]
+        latest_bb_upper_5m = data_5m['BB_UPPER'].iloc[-1]
+        
+        # === حساب المؤشرات على 15m (للفلاتر والـ Long-Term)
+        data_15m = calculate_adx(data_15m)
+        current_adx_15m = data_15m['ADX'].iloc[-1]
+        data_15m['EMA_10'] = data_15m['Close'].ewm(span=10, adjust=False).mean()
+        data_15m['EMA_30'] = data_15m['Close'].ewm(span=30, adjust=False).mean()
+        htf_trend_15m = "BULLISH" if data_15m['EMA_10'].iloc[-1] > data_15m['EMA_30'].iloc[-1] else "BEARISH"
+        
+        # === حساب المؤشرات على 30m (للفلاتر)
+        data_30m['EMA_10'] = data_30m['Close'].ewm(span=10, adjust=False).mean()
+        data_30m['EMA_30'] = data_30m['Close'].ewm(span=30, adjust=False).mean()
+        htf_trend_30m = "BULLISH" if data_30m['EMA_10'].iloc[-1] > data_30m['EMA_30'].iloc[-1] else "BEARISH"
+        data_30m['SMA_200'] = data_30m['Close'].rolling(window=200).mean() 
+        latest_sma_200_30m = data_30m['SMA_200'].iloc[-1]
+        
+        # === حساب المؤشرات على 1h (للفلاتر)
+        data_1h['EMA_10'] = data_1h['Close'].ewm(span=10, adjust=False).mean()
+        data_1h['EMA_30'] = data_1h['Close'].ewm(span=30, adjust=False).mean()
+        htf_trend_1h = "BULLISH" if data_1h['EMA_10'].iloc[-1] > data_1h['EMA_30'].iloc[-1] else "BEARISH"
+        
+        
+        # ===============================================
+        # === 1. محاولة استخراج إشارة LONG-TERM (الأولوية) ===
+        # ===============================================
+        
+        action_lt = "HOLD"
+        
+        # الشرط الأولي (كروس أوفر على 15m)
+        is_buy_signal_15m = (data_15m['EMA_10'].iloc[-2] <= data_15m['EMA_30'].iloc[-2] and data_15m['EMA_10'].iloc[-1] > data_15m['EMA_30'].iloc[-1])
+        is_sell_signal_15m = (data_15m['EMA_10'].iloc[-2] >= data_15m['EMA_30'].iloc[-2] and data_15m['EMA_10'].iloc[-1] < data_15m['EMA_30'].iloc[-1])
+
+        if is_buy_signal_15m:
+            # فلتر ADX: الاتجاه قوي على 15m
+            if current_adx_15m >= ADX_LONGTERM_MIN:
+                # فلتر الاتجاهات الكبرى: توافق 30m و 1h
+                if htf_trend_30m == "BULLISH" and htf_trend_1h == "BULLISH":
+                    # فلتر SMA 200: يجب أن يكون السعر فوق SMA 200 على 30m
+                    if entry_price > latest_sma_200_30m:
+                        action_lt = "BUY"
+                        
+        elif is_sell_signal_15m:
+            # فلتر ADX: الاتجاه قوي على 15m
+            if current_adx_15m >= ADX_LONGTERM_MIN:
+                # فلتر الاتجاهات الكبرى: توافق 30m و 1h
+                if htf_trend_30m == "BEARISH" and htf_trend_1h == "BEARISH":
+                    # فلتر SMA 200: يجب أن يكون السعر تحت SMA 200 على 30m
+                    if entry_price < latest_sma_200_30m:
+                        action_lt = "SELL"
+                        
+        if action_lt != "HOLD":
+            action = action_lt
+            trade_type = "LONG_TERM"
+            confidence = 0.99 # ثقة عالية جداً نتيجة لشدة الفلترة
+            rr_factor = LONGTERM_RR_FACTOR
+        
+        # ===============================================
+        # === 2. محاولة استخراج إشارة SCALPING (الخيار الثاني) ===
+        # ===============================================
+        
+        else: # إذا لم نجد إشارة Long-Term
+            
+            action_sc = "HOLD"
+            
+            # الشرط الأولي (كروس أوفر على 1m)
+            ema_fast_prev = data_1m['EMA_5'].iloc[-2]
+            ema_slow_prev = data_1m['EMA_20'].iloc[-2]
+            ema_fast_current = data_1m['EMA_5'].iloc[-1]
+            ema_slow_current = data_1m['EMA_20'].iloc[-1]
+            
+            is_buy_signal_1m = (ema_fast_prev <= ema_slow_prev and ema_fast_current > ema_slow_current)
+            is_sell_signal_1m = (ema_fast_prev >= ema_slow_prev and ema_fast_current < ema_slow_current)
+
+            if is_buy_signal_1m: 
+                # فلتر ADX: الاتجاه قوي على 5m
+                if current_adx_5m >= ADX_SCALPING_MIN:
+                    # فلتر الاتجاهات: توافق 5m و 15m
+                    if htf_trend_5m == "BULLISH" and htf_trend_15m == "BULLISH":
+                        # فلتر RSI: يجب أن يكون في منطقة زخم جيد
+                        if current_rsi > 50 and current_rsi < 70:
+                            # فلتر البولينجر باند: قرب القاع (للارتداد الصاعد)
+                            if (entry_price - latest_bb_lower_5m) < BB_PROXIMITY_THRESHOLD and entry_price > latest_bb_lower_5m:
+                                # فلتر SMA 200: يجب أن يكون السعر فوقها على 5m
+                                if entry_price > latest_sma_200_5m:
+                                    action_sc = "BUY"
+                                    
+            elif is_sell_signal_1m:
+                # فلتر ADX: الاتجاه قوي على 5m
+                if current_adx_5m >= ADX_SCALPING_MIN:
+                    # فلتر الاتجاهات: توافق 5m و 15m
+                    if htf_trend_5m == "BEARISH" and htf_trend_15m == "BEARISH":
+                         # فلتر RSI: يجب أن يكون في منطقة زخم جيد
+                        if current_rsi < 50 and current_rsi > 30:
+                            # فلتر البولينجر باند: قرب القمة (للهبوط)
+                            if (latest_bb_upper_5m - entry_price) < BB_PROXIMITY_THRESHOLD and entry_price < latest_bb_upper_5m:
+                                # فلتر SMA 200: يجب أن يكون السعر تحتها على 5m
+                                if entry_price < latest_sma_200_5m:
+                                    action_sc = "SELL"
+                                    
+            if action_sc != "HOLD":
+                action = action_sc
+                trade_type = "SCALPING"
+                confidence = 0.98 # ثقة 98% نتيجة لشدة الفلترة
+                rr_factor = SCALPING_RR_FACTOR
+            else:
+                action = "HOLD"
+                trade_type = "NONE"
+                confidence = 0.0
+
+        # ===============================================
+        # === حساب نقاط الخروج والتقرير النهائي ===
+        # ===============================================
+        
+        if action != "HOLD":
+            # SL_DISTANCE يعتمد على ATR (متغير لكل صفقة)
+            risk_amount = max(current_atr * SL_FACTOR, MIN_SL_DISTANCE) 
+            stop_loss_distance = risk_amount
+            
             if action == "BUY":
                 stop_loss = entry_price - risk_amount 
-                take_profit = entry_price + (risk_amount * TP_FACTOR) 
+                take_profit = entry_price + (risk_amount * rr_factor) 
             
             elif action == "SELL":
                 stop_loss = entry_price + risk_amount
-                take_profit = entry_price - (risk_amount * TP_FACTOR)
+                take_profit = entry_price - (risk_amount * rr_factor)
                 
-            stop_loss_distance = abs(entry_price - stop_loss) 
+            price_msg = f"""
+📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {price_source})
+السعر: ${entry_price:,.2f} | الوقت: {latest_time} UTC
+
+**تحليل المؤشرات:**
+- **RSI (1m):** {current_rsi:.2f} 
+- **ATR (1m):** {current_atr:.2f} 
+- **ADX (5m):** {current_adx_5m:.2f} 
+- **ADX (15m):** {current_adx_15m:.2f} 
+- **SMA 200 (5m):** {latest_sma_200_5m:,.2f}
+- **الاتجاهات (5m/15m/30m/1h):** {htf_trend_5m[0]}/{htf_trend_15m[0]}/{htf_trend_30m[0]}/{htf_trend_1h[0]}
+"""
+            return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance, trade_type
         
-        price_msg = f"📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {price_source}، الاتجاه الأكبر: {htf_trend}):\nالسعر: ${entry_price:,.2f}\nالوقت: {latest_time} UTC\n\n**تحليل المؤشرات (1m):**\n- EMA (5/20): {'تقاطع شراء' if is_buy_signal else 'تقاطع بيع' if is_sell_signal else action}\n- RSI (14): {current_rsi:.2f}\n- ATR (14): {current_atr:.2f}"
-        
-        return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance 
+        # ❌ رسالة الرفض النهائي (عندما تكون HOLD)
+        else:
+            price_msg = f"""
+📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {price_source})
+السعر: ${entry_price:,.2f} | الوقت: {latest_time} UTC
+
+**تحليل المؤشرات:**
+- **RSI (1m):** {current_rsi:.2f} 
+- **ATR (1m):** {current_atr:.2f} 
+- **ADX (5m/15m):** {current_adx_5m:.2f}/{current_adx_15m:.2f} 
+- **الاتجاهات (30m/1h):** {htf_trend_30m[0]}/{htf_trend_1h[0]}
+"""
+            return price_msg, confidence, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
         
     except Exception as e:
         print(f"❌ فشل في جلب بيانات التداول لـ XAUUSD أو التحليل: {e}")
-        return f"❌ فشل في جلب بيانات التداول لـ XAUUSD أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
+        return f"❌ فشل في جلب بيانات التداول لـ XAUUSD أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
 
 
-# === دالة الإرسال التلقائي الجديدة ===
+# === دالة الإرسال التلقائي الجديدة (تم التحديث لدعم النوع المزدوج) ===
 async def send_vip_trade_signal():
-    global TP_FACTOR # ضمان استخدام القيمة العامة
     
     # 1. تحقق من عدم وجود صفقات نشطة بالفعل
     active_trades = get_active_trades()
     if len(active_trades) > 0:
         print(f"🤖 يوجد {len(active_trades)} صفقات نشطة. تم تخطي التحليل التلقائي.")
-        return # 🛑 هذا السطر يوقف الإرسال
+        return 
 
-    # 2. إجراء التحليل
+    # 2. إجراء التحليل المزدوج
     try:
-        price_info_msg, confidence, action, entry, sl, tp, sl_distance = get_signal_and_confidence(TRADE_SYMBOL)
+        price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL)
     except Exception as e:
         print(f"❌ خطأ حرج أثناء التحليل التلقائي: {e}")
         return
@@ -687,12 +822,18 @@ async def send_vip_trade_signal():
     confidence_percent = confidence * 100
     DISPLAY_SYMBOL = "XAUUSD" 
     
-    # 3. تحقق من شرط الثقة (95% أو أعلى)
+    # تحديد معامل R:R المستخدم للرسالة
+    rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
+
+    # 3. تحقق من شرط الثقة (98% أو أعلى)
     if action != "HOLD" and confidence >= CONFIDENCE_THRESHOLD:
         
-        print(f"✅ إشارة {action} قوية جداً تم العثور عليها (الثقة: {confidence_percent:.2f}%). جارٍ الإرسال...")
+        print(f"✅ إشارة {action} قوية جداً تم العثور عليها ({trade_type}) (الثقة: {confidence_percent:.2f}%). جارٍ الإرسال...")
+        
+        trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
         
         trade_msg = f"""
+🚨 TRADE TYPE: **{trade_type_msg}** 🚨
 {('🟢' if action == 'BUY' else '🔴')} <b>ALPHA TRADE ALERT - VIP SIGNAL!</b> {('🟢' if action == 'BUY' else '🔴')}
 ━━━━━━━━━━━━━━━
 📈 **PAIR:** XAUUSD 
@@ -701,7 +842,7 @@ async def send_vip_trade_signal():
 🎯 **TAKE PROFIT (TP):** ${tp:,.2f}
 🛑 **STOP LOSS (SL):** ${sl:,.2f}
 🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b> ({CONFIDENCE_THRESHOLD*100:.0f}%+)
-⚖️ **RISK/REWARD:** 1:{TP_FACTOR:.1f} (SL/TP)
+⚖️ **RISK/REWARD:** 1:{rr_factor_used:.1f} (SL/TP)
 ━━━━━━━━━━━━━━━
 ⚠️ نفذ الصفقة **فوراً** على سعر السوق.
 """
@@ -709,7 +850,7 @@ async def send_vip_trade_signal():
         all_users = get_all_users_ids()
         vip_users = [uid for uid, is_banned in all_users if is_banned == 0 and is_user_vip(uid)]
         
-        trade_id = save_new_trade(action, entry, tp, sl, len(vip_users))
+        trade_id = save_new_trade(action, entry, tp, sl, len(vip_users), trade_type)
         
         if trade_id:
             for uid in vip_users:
@@ -718,17 +859,18 @@ async def send_vip_trade_signal():
                 except Exception:
                     pass
             
-            # إرسال إشعار للأدمن
+            # إرسال إشعار للأدمن (تأكيد أن الصفقة أُرسلت)
             if ADMIN_ID != 0:
-                 await bot.send_message(ADMIN_ID, f"🔔 **تم إرسال إشارة VIP تلقائية بنجاح!**\nID: {trade_id}", parse_mode="HTML")
+                 await bot.send_message(ADMIN_ID, f"🔔 **تم إرسال إشارة VIP تلقائية بنجاح!**\nID: {trade_id}\n{trade_msg}", parse_mode="HTML")
                  
     elif action != "HOLD":
-         print(f"⚠️ تم العثور على إشارة {action}، لكن الثقة {confidence_percent:.2f}% لم تصل إلى المطلوب {CONFIDENCE_THRESHOLD*100:.0f}%.")
+         print(f"⚠️ تم العثور على إشارة {action} ({trade_type})، لكن الثقة {confidence_percent:.2f}% لم تصل إلى المطلوب {CONFIDENCE_THRESHOLD*100:.0f}%.")
     else:
          print("💡 لا توجد إشارة واضحة (HOLD).")
 
 
-# =============== باقي الكود (تم تعديل دالتي التحليل الخاص والتحليل الفوري) ===============
+# =============== باقي الكود (تم تحديث بعض الدوال لدعم trade_type) ===============
+# (العديد من الدوال مثل القوائم، الاتصال، الإدارة، التحليل الفوري، إلخ... بدون تغيير)
 def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -865,10 +1007,10 @@ async def admin_panel(msg: types.Message):
     if msg.from_user.id != ADMIN_ID:
         await msg.reply("🚫 ليس لديك صلاحية الوصول لهذه اللوحة.")
         return
-    await msg.reply("🎛️ مرحبًا بك في لوحة تحكم الأدمن!", reply_markup=admin_menu())
+    await msg.reply("🎛️ مرحباً بك في لوحة تحكم الأدمن!", reply_markup=admin_menu())
 
 # ----------------------------------------------------------------------------------
-# دالة تحليل فوري ⚡️ - تم تصحيح رسالة الإخراج لعرض الثقة الفعلية
+# دالة تحليل فوري ⚡️ 
 # ----------------------------------------------------------------------------------
 @dp.message(F.text == "تحليل فوري ⚡️")
 async def analyze_market_now(msg: types.Message):
@@ -878,13 +1020,13 @@ async def analyze_market_now(msg: types.Message):
     
     await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
     
-    price_info_msg, confidence, action, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
+    price_info_msg, confidence, action, _, _, _, _, trade_type = get_signal_and_confidence(TRADE_SYMBOL)
     confidence_percent = confidence * 100
     threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
     
     # ⚠️ التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
-    if confidence == 0.0 and "لا تتوفر" in price_info_msg:
-        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}")
+    if confidence == 0.0 and sl == 0.0 and ("لا تتوفر" in price_info_msg or "عرضي" in price_info_msg or "هادئ" in price_info_msg):
+        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}", parse_mode="HTML")
         return
     
     # (1) إذا لم تتوفر إشارة أساساً أو الثقة غير كافية
@@ -900,30 +1042,30 @@ async def analyze_market_now(msg: types.Message):
 """
          await msg.answer(status_msg, parse_mode="HTML")
     
-    # (2) إذا كانت الثقة كافية (95% أو أعلى) - تم تصحيح الرسالة هنا
+    # (2) إذا كانت الثقة كافية (98% أو أعلى) - تم تصحيح الرسالة هنا
     elif confidence >= CONFIDENCE_THRESHOLD:
-         await msg.answer(f"✅ تم إيجاد إشارة فائقة القوة ({action}) على XAUUSD!\nنسبة الثقة: <b>{confidence_percent:.2f}%</b> (أعلى من المطلوب {threshold_percent}%).\n**تم إرسال الإشارة التلقائية لـ VIP إذا لم تكن هناك صفقات نشطة.**")
+         await msg.answer(f"✅ تم إيجاد إشارة فائقة القوة ({action}) ({trade_type}) على XAUUSD!\nنسبة الثقة: <b>{confidence_percent:.2f}%</b> (أعلى من المطلوب {threshold_percent}%).\n**تم إرسال الإشارة التلقائية لـ VIP إذا لم تكن هناك صفقات نشطة.**", parse_mode="HTML")
 # ----------------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------------
-# دالة تحليل خاص (VIP) 👤 - تم تعديلها لعرض رسالة تفصيلية حتى في حالة HOLD
+# دالة تحليل خاص (VIP) 👤 
 # ----------------------------------------------------------------------------------
 @dp.message(F.text == "تحليل خاص (VIP) 👤")
 async def analyze_private_pair(msg: types.Message):
-    global TP_FACTOR # ⚠️ تم إضافة هذا السطر لحل خطأ NameError
+    global SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR 
     
     if msg.from_user.id != ADMIN_ID: await msg.answer("🚫 هذه الميزة خاصة بالإدمن."); return
     
     await msg.reply(f"⏳ جارٍ تحليل الزوج الخاص: **XAUUSD** (الذهب)...")
     
-    price_info_msg, confidence, action, entry, sl, tp, sl_distance = get_signal_and_confidence(ADMIN_TRADE_SYMBOL)
+    price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(ADMIN_TRADE_SYMBOL)
     
     confidence_percent = confidence * 100
     threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
     
     # ⚠️ التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
-    if confidence == 0.0 and sl == 0.0 and "لا تتوفر" in price_info_msg:
-        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}")
+    if confidence == 0.0 and sl == 0.0 and ("لا تتوفر" in price_info_msg or "عرضي" in price_info_msg or "هادئ" in price_info_msg):
+        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}", parse_mode="HTML")
         return
         
     if action == "HOLD" or confidence < CONFIDENCE_THRESHOLD:
@@ -942,7 +1084,11 @@ async def analyze_private_pair(msg: types.Message):
         return
     
     # إذا كانت الإشارة قوية وتجاوزت الثقة المطلوبة
+    rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
+    trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
+    
     private_msg = f"""
+🚨 TRADE TYPE: **{trade_type_msg}** 🚨
 {('🟢' if action == 'BUY' else '🔴')} <b>YOUR PERSONAL TRADE - GOLD (XAUUSD)</b> {('🟢' if action == 'BUY' else '🔴')}
 ━━━━━━━━━━━━━━━
 📈 **PAIR:** XAUUSD 
@@ -951,7 +1097,7 @@ async def analyze_private_pair(msg: types.Message):
 🎯 **TARGET (TP):** ${tp:,.2f}
 🛑 **STOP LOSS (SL):** ${sl:,.2f}
 🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b>
-⚖️ **RISK/REWARD:** 1:{TP_FACTOR:.1f} (SL/TP)
+⚖️ **RISK/REWARD:** 1:{rr_factor_used:.1f} (SL/TP)
 ━━━━━━━━━━━━━━━
 **📊 ملاحظة هامة (إدارة المخاطر):**
 تم تحديد نقاط الدخول والخروج فنيًا. يرجى **تحديد حجم اللوت** المناسب لرأس مالك وإستراتيجية المخاطرة الخاصة بك يدوياً.
@@ -998,14 +1144,15 @@ async def show_active_trades(msg: types.Message):
         entry = trade['entry_price']
         tp = trade['take_profit']
         sl = trade['stop_loss']
+        trade_type = trade['trade_type']
         
         signal_emoji = "🟢" if action == "BUY" else "🔴"
         
         report += f"""
-{signal_emoji} **{action} @ ${entry:,.2f}**
+{signal_emoji} **{action} @ ${entry:,.2f}** ({'سريع' if trade_type == 'SCALPING' else 'طويل'})
   - **TP:** ${tp:,.2f}
   - **SL:** ${sl:,.2f}
-  - **ID:** <code>{trade['trade_id']}</code>
+  - **ID:** <code>{trade_id}</code>
 """
     await msg.reply(report, parse_mode="HTML")
 
@@ -1084,18 +1231,19 @@ async def about_bot(msg: types.Message):
 
 ━━━━━━━━━━━━━━━
 🛡️ **ماذا يقدم لك الاشتراك VIP؟ (ميزة القوة الخارقة)**
-1.  <b>إشارات خماسية التأكيد (5-Tier Confirmation):</b>
-    نظامنا لا يعتمد على مؤشر واحد! بل يمرر الإشارة عبر <b>أربعة فلاتر تحليلية احترافية</b> في وقت واحد قبل الإرسال:
-    * **الفلتر 1 (EMA):** تحديد الإشارة الأولية على إطار الدقيقة.
-    * **الفلتر 2 (RSI):** تأكيد قوة الزخم واستمرارية الحركة.
-    * **الفلتر 3 (ATR):** قياس التقلب لتحديد نقاط TP/SL ديناميكيًا.
-    * **الفلتر 4 (HTF):** التأكد من توافق الإشارة مع الاتجاه الأكبر (5 دقائق) لتجنب الإشارات الكاذبة.
+1.  <b>إشارات ثنائية الاستراتيجية (Dual Strategy):</b>
+    نظامنا يبحث عن نوعين من الصفقات لتغطية جميع ظروف السوق القوية:
+    * **Scalping:** R:R 1:{SCALPING_RR_FACTOR:.1f} مع فلاتر 1m/5m/15m و ADX > {ADX_SCALPING_MIN}.
+    * **Long-Term:** R:R 1:{LONGTERM_RR_FACTOR:.1f} مع فلاتر 15m/30m/1h و ADX > {ADX_LONGTERM_MIN}.
     
-2.  <b>أعلى درجات الثقة:</b>
-    لا يتم إرسال أي صفقة إلا إذا تجاوزت نسبة الثقة **{threshold_percent}%** (حالياً يتم الإرسال عند {threshold_percent}% أو أعلى). هذا يعني أنك تحصل على إشارات نادرة، لكنها فائقة القوة.
-    
-3.  <b>إدارة مخاطر 1:{TP_FACTOR:.1f}:</b>
-    كل صفقة جاهزة للتنفيذ بنسبة مخاطرة إلى عائد (هدف الربح = {TP_FACTOR:.1f} أضعاف وقف الخسارة)، لضمان أن **الأرباح تفوق الخسائر دائمًا** على المدى الطويل.
+2.  <b>إشارات سداسية التأكيد (6-Tier Confirmation):</b>
+    كل صفقة تُرسل يجب أن تمر بـ 7 فلاتر تحليلية (EMA, RSI, ADX, BB, SMA 200, توافق الأطر الزمنية).
+
+3.  <b>أعلى درجات الثقة:</b>
+    لا يتم إرسال أي صفقة إلا إذا تجاوزت نسبة الثقة **{threshold_percent}%** (حالياً يتم الإرسال عند {threshold_percent}% أو أعلى)، وهذا يضمن جودة إشارة استثنائية.
+
+4.  <b>نقاط خروج ديناميكية:</b>
+    نقاط TP و SL تتغير مع كل صفقة بناءً على التقلب الفعلي للسوق (ATR)، مما يضمن تحديد هدف ووقف مناسبين لظروف السوق الحالية.
 
 ━━━━━━━━━━━━━━━
 💰 حوّل التحليل إلى ربح. لا تدع الفرص تفوتك! اضغط على '💰 خطة الأسعار VIP' للاطلاع على العروض الحالية.
@@ -1242,7 +1390,7 @@ async def display_user_status(msg: types.Message):
     await msg.reply(report, parse_mode="HTML")
 
 # ===============================================
-# === دالة متابعة الصفقات (Trade Monitoring) (بدون تغيير) ===
+# === دالة متابعة الصفقات (Trade Monitoring) (تم تحديث الرسالة) ===
 # ===============================================
 
 async def check_open_trades():
@@ -1267,6 +1415,7 @@ async def check_open_trades():
         action = trade['action']
         tp = trade['take_profit']
         sl = trade['stop_loss']
+        trade_type = trade['trade_type']
         
         exit_status = None
         close_price = None
@@ -1292,8 +1441,10 @@ async def check_open_trades():
             closed_count += 1
             
             result_emoji = "🏆🎉" if exit_status == "HIT_TP" else "🛑"
+            trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
             
             close_msg = f"""
+🚨 TRADE TYPE: **{trade_type_msg}** 🚨
 {result_emoji} <b>TRADE CLOSED!</b> {result_emoji}
 ━━━━━━━━━━━━━━━
 📈 **PAIR:** XAUUSD 
@@ -1321,7 +1472,8 @@ def is_weekend_closure():
     now_utc = datetime.now(timezone.utc) 
     weekday = now_utc.weekday() 
     
-    if weekday == 5 or (weekday == 6 and now_utc.hour < 21): 
+    # من إغلاق الجمعة (الساعة 21:00 بتوقيت UTC) حتى فتح الأحد (الساعة 21:00 بتوقيت UTC)
+    if weekday == 5 or (weekday == 6 and now_utc.hour < 21) or (weekday == 4 and now_utc.hour >= 21): 
         return True
     return False 
 
@@ -1340,7 +1492,7 @@ async def trade_monitoring_and_alert():
     while True:
         
         if not is_weekend_closure():
-            # 1. تحليل السوق وإرسال الإشارة إذا تجاوزت الثقة 95%
+            # 1. تحليل السوق وإرسال الإشارة إذا تجاوزت الثقة 98%
             await send_vip_trade_signal()
         else:
             print("🤖 السوق مغلق (عطلة نهاية الأسبوع)، تم إيقاف التحليل التلقائي.")
