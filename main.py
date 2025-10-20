@@ -43,6 +43,11 @@ ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAUT/USDT")
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
 ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) 
 
+# ⚠️ تم تعريف هذه المتغيرات في النطاق العام لحل مشكلة NameError ⚠️
+SL_FACTOR = 1.5  # معامل تحديد وقف الخسارة
+TP_FACTOR = 2.5  # معامل تحديد جني الأرباح (نسبة المخاطرة إلى العائد)
+# -----------------------------------------------------------------
+
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.95")) # ⚠️ تم رفع القيمة هنا
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) 
 ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) 
@@ -543,6 +548,8 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
     """
     تحليل ذكي باستخدام 4 فلاتر (EMA 1m, RSI, ATR, EMA 5m) لتحديد إشارة فائقة القوة.
     """
+    global SL_FACTOR, TP_FACTOR # ضمان استخدام القيم العامة المُصححة
+    
     try:
         # جلب بيانات الشموع
         data_1m = fetch_ohlcv_data(symbol, "1m", limit=200)
@@ -595,12 +602,6 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         current_atr = data['ATR'].iloc[-1]
         
         MIN_ATR_THRESHOLD = 0.5 
-        
-        # ⚠️ (تعديل القوة) تم زيادة الـ SL لتقليل ضرب الوقف العرضي (Noise)
-        SL_FACTOR = 1.5 
-        # ⚠️ (تعديل القوة) تم تقليل الـ TP لزيادة احتمالية الوصول للهدف (Win Rate)
-        TP_FACTOR = 2.5 
-        
         MIN_SL = 0.5 
 
         action = "HOLD"
@@ -668,6 +669,7 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
 
 # === دالة الإرسال التلقائي الجديدة ===
 async def send_vip_trade_signal():
+    global TP_FACTOR # ضمان استخدام القيمة العامة
     
     # 1. تحقق من عدم وجود صفقات نشطة بالفعل
     active_trades = get_active_trades()
@@ -774,71 +776,6 @@ async def process_new_capital(msg: types.Message, state: FSMContext):
     except ValueError:
         await msg.reply("❌ قيمة رأس المال غير صحيحة. يرجى إدخال رقم موجب فقط.", reply_markup=admin_menu())
 
-# ----------------------------------------------------------------------------------
-# دالة تحليل خاص (VIP) 👤 - تم تعديلها لعرض رسالة تفصيلية حتى في حالة HOLD
-# ----------------------------------------------------------------------------------
-@dp.message(F.text == "تحليل خاص (VIP) 👤")
-async def analyze_private_pair(msg: types.Message):
-    if msg.from_user.id != ADMIN_ID: await msg.answer("🚫 هذه الميزة خاصة بالإدمن."); return
-    
-    await msg.reply(f"⏳ جارٍ تحليل الزوج الخاص: **XAUUSD** (الذهب)...")
-    
-    price_info_msg, confidence, action, entry, sl, tp, sl_distance = get_signal_and_confidence(ADMIN_TRADE_SYMBOL)
-    
-    confidence_percent = confidence * 100
-    threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
-    
-    # ⚠️ التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
-    if confidence == 0.0 and sl == 0.0 and "لا تتوفر" in price_info_msg:
-        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}")
-        return
-        
-    if action == "HOLD" or confidence < CONFIDENCE_THRESHOLD:
-        status_msg = f"""
-💡 **التحليل الخاص - XAUUSD**
-━━━━━━━━━━━━━━━
-🔎 **الإشارة الحالية:** {action}
-🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
-❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' else 'الثقة غير كافية للدخول')}
-━━━━━━━━━━━━━━━
-{price_info_msg}
-
-**📊 ملاحظة:** لم يتم توليد صفقة قوية لتجنب المخاطر.
-"""
-        await msg.answer(status_msg, parse_mode="HTML")
-        return
-    
-    # إذا كانت الإشارة قوية وتجاوزت الثقة المطلوبة
-    private_msg = f"""
-{('🟢' if action == 'BUY' else '🔴')} <b>YOUR PERSONAL TRADE - GOLD (XAUUSD)</b> {('🟢' if action == 'BUY' else '🔴')}
-━━━━━━━━━━━━━━━
-📈 **PAIR:** XAUUSD 
-🔥 **ACTION:** {action} (Market Execution)
-💰 **ENTRY:** ${entry:,.2f}
-🎯 **TARGET (TP):** ${tp:,.2f}
-🛑 **STOP LOSS (SL):** ${sl:,.2f}
-🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b>
-⚖️ **RISK/REWARD:** 1:{TP_FACTOR:.1f} (SL/TP)
-━━━━━━━━━━━━━━━
-**📊 ملاحظة هامة (إدارة المخاطر):**
-تم تحديد نقاط الدخول والخروج فنيًا. يرجى **تحديد حجم اللوت** المناسب لرأس مالك وإستراتيجية المخاطرة الخاصة بك يدوياً.
-"""
-    await msg.answer(private_msg, parse_mode="HTML")
-    await msg.answer("❓ **هل دخلت هذه الصفقة؟** (استخدم 'تسجيل نتيجة صفقة 📝' لتسجيل النتيجة يدوياً)", parse_mode="HTML")
-# ----------------------------------------------------------------------------------
-
-@dp.message(F.text == "تسجيل نتيجة صفقة 📝")
-async def prompt_trade_result(msg: types.Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID: return
-    current_state = await state.get_state()
-    
-    if current_state == AdminStates.waiting_trade_pnl.state:
-         await msg.reply("يرجى إدخال قيمة الربح/الخسارة الصافية (مثال: **+6** أو **-2**).")
-         return
-         
-    await state.set_state(AdminStates.waiting_trade_result_input)
-    await msg.reply("يرجى إدخال ملخص نتيجة الصفقة اليدوية بالترتيب التالي (افصل بينهما بمسافة):\n**الرمز العمل اللوت الربح/الخسارة**\n\nمثال: `XAUT/USDT BUY 0.05 -2.50`")
-
 @dp.message(AdminStates.waiting_trade_pnl)
 async def process_trade_pnl_after_entry(msg: types.Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
@@ -895,6 +832,17 @@ async def process_manual_trade_result(msg: types.Message, state: FSMContext):
     except ValueError:
         await msg.reply("❌ صيغة الإدخال غير صحيحة. يرجى اتباع المثال: `XAUT/USDT BUY 0.05 -2.50`", reply_markup=admin_menu())
 
+@dp.message(F.text == "تسجيل نتيجة صفقة 📝")
+async def prompt_trade_result(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    current_state = await state.get_state()
+    
+    if current_state == AdminStates.waiting_trade_pnl.state:
+         await msg.reply("يرجى إدخال قيمة الربح/الخسارة الصافية (مثال: **+6** أو **-2**).")
+         return
+         
+    await state.set_state(AdminStates.waiting_trade_result_input)
+    await msg.reply("يرجى إدخال ملخص نتيجة الصفقة اليدوية بالترتيب التالي (افصل بينهما بمسافة):\n**الرمز العمل اللوت الربح/الخسارة**\n\nمثال: `XAUT/USDT BUY 0.05 -2.50`")
 
 @dp.message(F.text == "تقرير الأداء الأسبوعي 📊")
 async def show_weekly_report(msg: types.Message):
@@ -955,6 +903,61 @@ async def analyze_market_now(msg: types.Message):
     # (2) إذا كانت الثقة كافية (95% أو أعلى) - تم تصحيح الرسالة هنا
     elif confidence >= CONFIDENCE_THRESHOLD:
          await msg.answer(f"✅ تم إيجاد إشارة فائقة القوة ({action}) على XAUUSD!\nنسبة الثقة: <b>{confidence_percent:.2f}%</b> (أعلى من المطلوب {threshold_percent}%).\n**تم إرسال الإشارة التلقائية لـ VIP إذا لم تكن هناك صفقات نشطة.**")
+# ----------------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------------
+# دالة تحليل خاص (VIP) 👤 - تم تعديلها لعرض رسالة تفصيلية حتى في حالة HOLD
+# ----------------------------------------------------------------------------------
+@dp.message(F.text == "تحليل خاص (VIP) 👤")
+async def analyze_private_pair(msg: types.Message):
+    global TP_FACTOR # ⚠️ تم إضافة هذا السطر لحل خطأ NameError
+    
+    if msg.from_user.id != ADMIN_ID: await msg.answer("🚫 هذه الميزة خاصة بالإدمن."); return
+    
+    await msg.reply(f"⏳ جارٍ تحليل الزوج الخاص: **XAUUSD** (الذهب)...")
+    
+    price_info_msg, confidence, action, entry, sl, tp, sl_distance = get_signal_and_confidence(ADMIN_TRADE_SYMBOL)
+    
+    confidence_percent = confidence * 100
+    threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
+    
+    # ⚠️ التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
+    if confidence == 0.0 and sl == 0.0 and "لا تتوفر" in price_info_msg:
+        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}")
+        return
+        
+    if action == "HOLD" or confidence < CONFIDENCE_THRESHOLD:
+        status_msg = f"""
+💡 **التحليل الخاص - XAUUSD**
+━━━━━━━━━━━━━━━
+🔎 **الإشارة الحالية:** {action}
+🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
+❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' else 'الثقة غير كافية للدخول')}
+━━━━━━━━━━━━━━━
+{price_info_msg}
+
+**📊 ملاحظة:** لم يتم توليد صفقة قوية لتجنب المخاطر.
+"""
+        await msg.answer(status_msg, parse_mode="HTML")
+        return
+    
+    # إذا كانت الإشارة قوية وتجاوزت الثقة المطلوبة
+    private_msg = f"""
+{('🟢' if action == 'BUY' else '🔴')} <b>YOUR PERSONAL TRADE - GOLD (XAUUSD)</b> {('🟢' if action == 'BUY' else '🔴')}
+━━━━━━━━━━━━━━━
+📈 **PAIR:** XAUUSD 
+🔥 **ACTION:** {action} (Market Execution)
+💰 **ENTRY:** ${entry:,.2f}
+🎯 **TARGET (TP):** ${tp:,.2f}
+🛑 **STOP LOSS (SL):** ${sl:,.2f}
+🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b>
+⚖️ **RISK/REWARD:** 1:{TP_FACTOR:.1f} (SL/TP)
+━━━━━━━━━━━━━━━
+**📊 ملاحظة هامة (إدارة المخاطر):**
+تم تحديد نقاط الدخول والخروج فنيًا. يرجى **تحديد حجم اللوت** المناسب لرأس مالك وإستراتيجية المخاطرة الخاصة بك يدوياً.
+"""
+    await msg.answer(private_msg, parse_mode="HTML")
+    await msg.answer("❓ **هل دخلت هذه الصفقة؟** (استخدم 'تسجيل نتيجة صفقة 📝' لتسجيل النتيجة يدوياً)", parse_mode="HTML")
 # ----------------------------------------------------------------------------------
 
 @dp.message(F.text == "📊 جرد الصفقات اليومي")
