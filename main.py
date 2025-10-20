@@ -1,9 +1,9 @@
-import asyncio
+Import asyncio
 import time
 import os
 import psycopg2
 import pandas as pd
-import yfinance as yf
+# import yfinance as yf  <-- تم حذف استيراد yfinance
 import schedule
 import random
 import uuid
@@ -38,9 +38,9 @@ class UserStates(StatesGroup):
 # =============== إعداد البوت والمتغيرات (من Environment Variables) ===============
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
-TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAU/USD") 
-CCXT_EXCHANGE = os.getenv("CCXT_EXCHANGE", "oanda") 
-ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAU/USD") 
+TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAU/USDT") # <--- تم تعديل القيمة الافتراضية هنا
+CCXT_EXCHANGE = os.getenv("CCXT_EXCHANGE", "bybit") # <--- تم تعديل القيمة الافتراضية هنا
+ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAU/USDT") # <--- تم تعديل القيمة الافتراضية هنا
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
 ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) 
 
@@ -48,6 +48,10 @@ CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.90"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) # فاصل متابعة الصفقات بالثواني
 ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) 
+
+# مفاتيح Bybit (ليست ضرورية لبيانات السوق العامة، لكنها ضرورية للتداول الخاص)
+BYBIT_API_KEY = os.getenv("BYBIT_API_KEY") 
+BYBIT_SECRET = os.getenv("BYBIT_SECRET")
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
@@ -65,7 +69,8 @@ bot = Bot(token=BOT_TOKEN,
           
 dp = Dispatcher(storage=MemoryStorage())
 
-# =============== قاعدة بيانات PostgreSQL ===============
+# =============== قاعدة بيانات PostgreSQL (بدون تغيير) ===============
+# ... (باقي دوال قاعدة البيانات هنا - لم تتغير)
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("🚫 لم يتم العثور على DATABASE_URL. يرجى التأكد من ربط PostgreSQL بـ Railway.")
@@ -237,7 +242,8 @@ def create_invite_key(admin_id, days):
     conn.close()
     return key
 
-# === دوال إدارة الصفقات ===
+# === دوال إدارة الصفقات (بدون تغيير) ===
+# ... (باقي دوال إدارة الصفقات هنا - لم تتغير)
 def save_new_trade(action, entry, tp, sl, user_count):
     conn = get_db_connection()
     if conn is None: return None
@@ -321,7 +327,8 @@ def get_daily_trade_report():
 
     return report_msg
 
-# =============== دوال إدارة الأداء الشخصي ===============
+# =============== دوال إدارة الأداء الشخصي (بدون تغيير) ===============
+# ... (باقي دوال الأداء الشخصي هنا - لم تتغير)
 def get_admin_financial_status():
     conn = get_db_connection()
     if conn is None: return ADMIN_CAPITAL_DEFAULT
@@ -410,7 +417,8 @@ def generate_weekly_performance_report():
         report += "\n\n⚠️ لم يتم تسجيل أي صفقات خاصة خلال هذه الفترة."
     return report
     
-# =============== دالة حساب حجم اللوت (مُخصَّصة للأدمن) ===============
+# =============== دالة حساب حجم اللوت (مُخصَّصة للأدمن) (بدون تغيير) ===============
+# ... (باقي دالة حساب حجم اللوت هنا - لم تتغير)
 def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tuple[float, str]:
     """
     يحسب حجم اللوت المناسب بناءً على رأس مال الأدمن والمخاطرة (2%).
@@ -433,61 +441,55 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
     return lot_size, asset_info
 
 # ===============================================
-# === دوال جلب البيانات الفورية (الاستراتيجية الهجينة - التعديل النهائي) ===
+# === دوال جلب البيانات الفورية (التعديل للعمل مع Bybit فقط) ===
 # ===============================================
 
 def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
     """
-    تجلب بيانات الشموع (OHLCV) للرمز والفاصل الزمني المحدد.
-    الأولوية لـ CCXT، ثم العودة لـ YFinance لجلب البيانات التاريخية اللازمة للتحليل.
+    تجلب بيانات الشموع (OHLCV) للرمز والفاصل الزمني المحدد باستخدام CCXT (Bybit).
+    تم حذف الاحتياطي YFinance.
     """
-    YF_FALLBACK_SYMBOL = "GC=F" # رمز العقود الآجلة للذهب في YFinance
     
-    # 1. محاولة جلب البيانات من CCXT (OANDA)
+    # 1. محاولة جلب البيانات من CCXT (Bybit)
     try:
+        # إنشاء مثيل CCXT (نحاول بدون مفتاح API أولاً)
         exchange = getattr(ccxt, CCXT_EXCHANGE)()
+        
+        # إذا كان BYBIT_API_KEY و BYBIT_SECRET موجودين في متغيرات البيئة، استخدمهما
+        if CCXT_EXCHANGE.lower() == 'bybit' and BYBIT_API_KEY and BYBIT_SECRET:
+             exchange = getattr(ccxt, CCXT_EXCHANGE)({'apiKey': BYBIT_API_KEY, 'secret': BYBIT_SECRET})
+        
         exchange.load_markets()
         ccxt_timeframe = timeframe.replace('m', '1m') # تحويل الفاصل الزمني
+        
         ohlcv = exchange.fetch_ohlcv(symbol, ccxt_timeframe, limit=limit)
         
-        # إذا جلب CCXT بيانات كافية (نعتبرها كافية للتحليل)
-        if ohlcv and len(ohlcv) >= 50: 
+        # نتحقق من وجود الـ 200 شمعة
+        if ohlcv and len(ohlcv) >= limit: 
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
             return df
         
-        # إذا كانت البيانات قليلة، ننتقل إلى الاحتياطي
-        raise Exception("CCXT returned insufficient data for analysis.")
+        # إذا كانت البيانات قليلة، نطلق خطأ للتعامل معه
+        raise Exception(f"CCXT ({CCXT_EXCHANGE}) returned insufficient data. Needed {limit}, got {len(ohlcv) if ohlcv else 0}.")
 
     except Exception as e:
-        # 2. الاحتياطي: العودة إلى YFinance لجلب البيانات التاريخية للتحليل (GC=F)
-        print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}). العودة إلى YFinance ({YF_FALLBACK_SYMBOL}).")
-        
-        # تحويل الفاصل الزمني للتوافق مع YFinance
-        yf_interval = timeframe.replace('m', 'min') 
-        
-        try:
-            # *[التعديل النهائي]* نطلب فترة كبيرة (60 يوماً) لضمان الحصول على 200 شمعة دقيقة/5د تاريخية فور فتح السوق
-            period_setting = "60d" 
-            
-            df = yf.download(YF_FALLBACK_SYMBOL, period=period_setting, interval=yf_interval, progress=False, auto_adjust=True)
-            
-            if df.empty or len(df) < 50:
-                 raise Exception("YFinance returned insufficient data.")
-                 
-            # نأخذ فقط آخر N شمعة مطلوبة (200 شمعة)
-            return df.tail(limit)
-            
-        except Exception as yf_e:
-            print(f"❌ فشل جلب بيانات التحليل OHLCV من YFinance أيضاً: {yf_e}")
-            return pd.DataFrame()
+        # لم يعد لدينا احتياطي YFinance (GC=F)
+        print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}): {e}")
+        return pd.DataFrame() # إرجاع DataFrame فارغ
 
 def fetch_current_price_ccxt(symbol: str) -> float or None:
-    """جلب السعر الحالي الفوري لرمز XAU/USD (الأولوية القصوى لـ CCXT للدقة)."""
+    """جلب السعر الحالي الفوري لرمز XAU/USDT (الأولوية القصوى لـ CCXT للدقة)."""
     try:
+        # إنشاء مثيل CCXT (نحاول بدون مفتاح API أولاً)
         exchange = getattr(ccxt, CCXT_EXCHANGE)()
+        
+        # إذا كان BYBIT_API_KEY و BYBIT_SECRET موجودين في متغيرات البيئة، استخدمهما
+        if CCXT_EXCHANGE.lower() == 'bybit' and BYBIT_API_KEY and BYBIT_SECRET:
+             exchange = getattr(ccxt, CCXT_EXCHANGE)({'apiKey': BYBIT_API_KEY, 'secret': BYBIT_SECRET})
+             
         exchange.load_markets()
         ticker = exchange.fetch_ticker(symbol)
         # نستخدم سعر البيع (Ask) لضمان دقة التنفيذ الفوري
@@ -497,7 +499,8 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
         print(f"❌ فشل جلب السعر اللحظي من CCXT ({CCXT_EXCHANGE}): {e}.")
         return None
 
-# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) ===============
+# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) (بدون تغيير) ===============
+# ... (باقي الـ Middleware هنا - لم تتغير)
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
         self, handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -540,7 +543,7 @@ class AccessMiddleware(BaseMiddleware):
 
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل (تم تعديل نقطة الدخول والمصدر) ===============
+# =============== وظائف التداول والتحليل (تم تعديل رسالة الخطأ) ===============
 
 def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float, float]:
     """
@@ -555,7 +558,8 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         # ************** شرط البيانات الكافية **************
         # نطلب 200 شمعة دقيقة و 200 شمعة 5 دقائق (40 شمعة 5 دقائق على الأقل)
         if data_1m.empty or len(data_1m) < 200 or data_5m.empty or len(data_5m) < 40: 
-            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}. (المصدر: {CCXT_EXCHANGE} أو GC=F)", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
+            # تم تعديل رسالة الخطأ هنا
+            return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}. (المصدر: {CCXT_EXCHANGE})", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
         # ************** جلب السعر اللحظي (للتنفيذ الدقيق) **************
         current_spot_price = fetch_current_price_ccxt(symbol)
@@ -564,7 +568,7 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         if current_spot_price is None:
             # في أسوأ الأحوال، نستخدم سعر الشمعة المغلقة من البيانات التاريخية
             current_spot_price = data_1m['Close'].iloc[-1].item()
-            price_source = "تحليل (GC=F)"
+            price_source = f"تحليل ({CCXT_EXCHANGE})" # رسالة مصدر معدلة
             
         entry_price = current_spot_price # نقطة الدخول هي السعر اللحظي الأكثر دقة
         
@@ -656,10 +660,11 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance 
         
     except Exception as e:
+        # تم تعديل رسالة الخطأ هنا
         return f"❌ فشل في جلب بيانات التداول لـ {DISPLAY_SYMBOL} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
-# =============== القوائم المُعدَّلة ===============
-
+# =============== باقي الكود (بدون تغيير) ===============
+# ... (جميع دوال الأوامر والقوائم المتبقية لا تحتاج لتعديل لأنها تستخدم المتغيرات الجديدة)
 def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -684,8 +689,6 @@ def admin_menu():
         ],
         resize_keyboard=True
     )
-
-# =============== أوامر الأدمن الإضافية للميزات الشخصية ===============
 
 @dp.message(F.text == "تعديل رأس المال 💵")
 async def prompt_new_capital(msg: types.Message, state: FSMContext):
@@ -855,8 +858,6 @@ async def show_weekly_report(msg: types.Message):
     await msg.reply(report, parse_mode="HTML")
 
 
-# =============== تكملة أوامر الأدمن والمستخدم (الأوامر الأصلية) ===============
-
 @dp.message(Command("start"))
 async def cmd_start(msg: types.Message):
     welcome_msg = f"""
@@ -905,6 +906,7 @@ async def daily_inventory_report(msg: types.Message):
 
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
+    # نستخدم نفس دالة التحليل للحصول على رسالة السعر المحدثة
     price_info_msg, _, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL) 
     await msg.reply(price_info_msg)
     
@@ -1168,7 +1170,7 @@ async def display_user_status(msg: types.Message):
     await msg.reply(report, parse_mode="HTML")
 
 # ===============================================
-# === دالة متابعة الصفقات (Trade Monitoring) ===
+# === دالة متابعة الصفقات (Trade Monitoring) (بدون تغيير) ===
 # ===============================================
 
 async def check_open_trades():
@@ -1239,7 +1241,7 @@ async def check_open_trades():
                 await bot.send_message(ADMIN_ID, f"🔔 تم إغلاق الصفقة **{trade_id}** بنجاح على: {exit_status}", parse_mode="HTML")
 
 # ===============================================
-# === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
+# === إعداد المهام المجدولة (Setup Scheduled Tasks) (بدون تغيير) ===
 # ===============================================
 
 def is_weekend_closure():
