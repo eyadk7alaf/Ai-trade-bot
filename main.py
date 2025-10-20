@@ -411,7 +411,7 @@ def generate_weekly_performance_report():
         report += "\n\n⚠️ لم يتم تسجيل أي صفقات خاصة خلال هذه الفترة."
     return report
     
-# =============== دالة حساب حجم اللوت (مُخصَّصة للأدمن) - تم الإبقاء عليها ولكنها غير مستخدمة الآن ===============
+# دالة حساب حجم اللوت (مُخصَّصة للأدمن) - تم الإبقاء عليها ولكنها غير مستخدمة الآن
 def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tuple[float, str]:
     """
     يحسب حجم اللوت المناسب بناءً على رأس مال الأدمن والمخاطرة (2%).
@@ -657,7 +657,7 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
                 
             stop_loss_distance = abs(entry_price - stop_loss) 
         
-        price_msg = f"📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {price_source}، الاتجاه الأكبر: {htf_trend}):\nالسعر: ${entry_price:,.2f}\nالوقت: {latest_time} UTC"
+        price_msg = f"📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {price_source}، الاتجاه الأكبر: {htf_trend}):\nالسعر: ${entry_price:,.2f}\nالوقت: {latest_time} UTC\n\n**تحليل المؤشرات (1m):**\n- EMA (5/20): {'تقاطع شراء' if is_buy_signal else 'تقاطع بيع' if is_sell_signal else action}\n- RSI (14): {current_rsi:.2f}\n- ATR (14): {current_atr:.2f}"
         
         return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance 
         
@@ -673,7 +673,7 @@ async def send_vip_trade_signal():
     active_trades = get_active_trades()
     if len(active_trades) > 0:
         print(f"🤖 يوجد {len(active_trades)} صفقات نشطة. تم تخطي التحليل التلقائي.")
-        return
+        return # 🛑 هذا السطر يوقف الإرسال
 
     # 2. إجراء التحليل
     try:
@@ -685,7 +685,7 @@ async def send_vip_trade_signal():
     confidence_percent = confidence * 100
     DISPLAY_SYMBOL = "XAUUSD" 
     
-    # 3. تحقق من شرط الثقة (90% أو أعلى)
+    # 3. تحقق من شرط الثقة (95% أو أعلى)
     if action != "HOLD" and confidence >= CONFIDENCE_THRESHOLD:
         
         print(f"✅ إشارة {action} قوية جداً تم العثور عليها (الثقة: {confidence_percent:.2f}%). جارٍ الإرسال...")
@@ -775,7 +775,7 @@ async def process_new_capital(msg: types.Message, state: FSMContext):
         await msg.reply("❌ قيمة رأس المال غير صحيحة. يرجى إدخال رقم موجب فقط.", reply_markup=admin_menu())
 
 # ----------------------------------------------------------------------------------
-# دالة تحليل خاص (VIP) 👤 - تم تعديلها لإزالة حساب حجم اللوت والمخاطرة 2%
+# دالة تحليل خاص (VIP) 👤 - تم تعديلها لعرض رسالة تفصيلية حتى في حالة HOLD
 # ----------------------------------------------------------------------------------
 @dp.message(F.text == "تحليل خاص (VIP) 👤")
 async def analyze_private_pair(msg: types.Message):
@@ -786,16 +786,29 @@ async def analyze_private_pair(msg: types.Message):
     price_info_msg, confidence, action, entry, sl, tp, sl_distance = get_signal_and_confidence(ADMIN_TRADE_SYMBOL)
     
     confidence_percent = confidence * 100
+    threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
     
     # ⚠️ التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
     if confidence == 0.0 and sl == 0.0 and "لا تتوفر" in price_info_msg:
         await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}")
         return
         
-    if action == "HOLD":
-        await msg.answer(f"💡 لا توجد إشارة واضحة (HOLD) على XAUUSD.\nالثقة: {confidence_percent:.2f}%.\n{price_info_msg}", parse_mode="HTML")
+    if action == "HOLD" or confidence < CONFIDENCE_THRESHOLD:
+        status_msg = f"""
+💡 **التحليل الخاص - XAUUSD**
+━━━━━━━━━━━━━━━
+🔎 **الإشارة الحالية:** {action}
+🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
+❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' else 'الثقة غير كافية للدخول')}
+━━━━━━━━━━━━━━━
+{price_info_msg}
+
+**📊 ملاحظة:** لم يتم توليد صفقة قوية لتجنب المخاطر.
+"""
+        await msg.answer(status_msg, parse_mode="HTML")
         return
     
+    # إذا كانت الإشارة قوية وتجاوزت الثقة المطلوبة
     private_msg = f"""
 {('🟢' if action == 'BUY' else '🔴')} <b>YOUR PERSONAL TRADE - GOLD (XAUUSD)</b> {('🟢' if action == 'BUY' else '🔴')}
 ━━━━━━━━━━━━━━━
@@ -804,15 +817,13 @@ async def analyze_private_pair(msg: types.Message):
 💰 **ENTRY:** ${entry:,.2f}
 🎯 **TARGET (TP):** ${tp:,.2f}
 🛑 **STOP LOSS (SL):** ${sl:,.2f}
-🔒 **SUCCESS RATE:** {confidence_percent:.2f}%
+🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b>
 ⚖️ **RISK/REWARD:** 1:{TP_FACTOR:.1f} (SL/TP)
 ━━━━━━━━━━━━━━━
 **📊 ملاحظة هامة (إدارة المخاطر):**
 تم تحديد نقاط الدخول والخروج فنيًا. يرجى **تحديد حجم اللوت** المناسب لرأس مالك وإستراتيجية المخاطرة الخاصة بك يدوياً.
 """
     await msg.answer(private_msg, parse_mode="HTML")
-    
-    # تم حذف أزرار التتبع الآلي
     await msg.answer("❓ **هل دخلت هذه الصفقة؟** (استخدم 'تسجيل نتيجة صفقة 📝' لتسجيل النتيجة يدوياً)", parse_mode="HTML")
 # ----------------------------------------------------------------------------------
 
@@ -909,7 +920,7 @@ async def admin_panel(msg: types.Message):
     await msg.reply("🎛️ مرحبًا بك في لوحة تحكم الأدمن!", reply_markup=admin_menu())
 
 # ----------------------------------------------------------------------------------
-# دالة تحليل فوري ⚡️ - تم تصحيح رسالة الإخراج
+# دالة تحليل فوري ⚡️ - تم تصحيح رسالة الإخراج لعرض الثقة الفعلية
 # ----------------------------------------------------------------------------------
 @dp.message(F.text == "تحليل فوري ⚡️")
 async def analyze_market_now(msg: types.Message):
@@ -928,17 +939,22 @@ async def analyze_market_now(msg: types.Message):
         await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}")
         return
     
-    # (1) إذا لم تتوفر إشارة أساساً (HOLD)
-    if action == "HOLD":
-         await msg.answer(f"💡 لا توجد إشارة واضحة (HOLD).\nالثقة: {confidence_percent:.2f}%. لم يتم إرسال صفقة.")
+    # (1) إذا لم تتوفر إشارة أساساً أو الثقة غير كافية
+    if action == "HOLD" or confidence < CONFIDENCE_THRESHOLD:
+         status_msg = f"""
+💡 **تقرير التحليل الفوري - XAUUSD**
+━━━━━━━━━━━━━━━
+🔎 **الإشارة الحالية:** {action}
+🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
+❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' else 'الثقة غير كافية للدخول')}
+━━━━━━━━━━━━━━━
+{price_info_msg}
+"""
+         await msg.answer(status_msg, parse_mode="HTML")
     
     # (2) إذا كانت الثقة كافية (95% أو أعلى) - تم تصحيح الرسالة هنا
     elif confidence >= CONFIDENCE_THRESHOLD:
-         await msg.answer(f"✅ تم إيجاد إشارة فائقة القوة ({action}) على XAUUSD!\nنسبة الثقة: <b>{confidence_percent:.2f}%</b> (أعلى من المطلوب {threshold_percent}%).\n**تم إرسال الإشارة التلقائية لـ VIP.**")
-    
-    # (3) إذا كانت الثقة غير كافية (أقل من 95% ولكن الإشارة ليست HOLD) - تم تصحيح الرسالة هنا
-    else:
-         await msg.answer(f"⚠️ الإشارة موجودة ({action}) على XAUUSD، لكن نسبة الثقة <b>{confidence_percent:.2f}%</b> أقل من المطلوب ({threshold_percent}%). لم يتم إرسال صفقة.")
+         await msg.answer(f"✅ تم إيجاد إشارة فائقة القوة ({action}) على XAUUSD!\nنسبة الثقة: <b>{confidence_percent:.2f}%</b> (أعلى من المطلوب {threshold_percent}%).\n**تم إرسال الإشارة التلقائية لـ VIP إذا لم تكن هناك صفقات نشطة.**")
 # ----------------------------------------------------------------------------------
 
 @dp.message(F.text == "📊 جرد الصفقات اليومي")
