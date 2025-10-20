@@ -1,9 +1,9 @@
-import asyncio
+Import asyncio
 import time
 import os
 import psycopg2
 import pandas as pd
-# import yfinance as yf  <-- تم حذف استيراد yfinance
+# import yfinance as yf  # <-- تم حذف استيراد yfinance
 import schedule
 import random
 import uuid
@@ -38,9 +38,9 @@ class UserStates(StatesGroup):
 # =============== إعداد البوت والمتغيرات (من Environment Variables) ===============
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
-TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAU/USDT") # <--- تم تعديل القيمة الافتراضية هنا
-CCXT_EXCHANGE = os.getenv("CCXT_EXCHANGE", "bybit") # <--- تم تعديل القيمة الافتراضية هنا
-ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAU/USDT") # <--- تم تعديل القيمة الافتراضية هنا
+TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAUT/USDT") # <--- تم تعديل القيمة الافتراضية
+CCXT_EXCHANGE = os.getenv("CCXT_EXCHANGE", "bybit") 
+ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAUT/USDT") # <--- تم تعديل القيمة الافتراضية
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
 ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) 
 
@@ -433,10 +433,11 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
     risk_amount = capital * risk_percent 
     
     # الذهب: 1 لوت قياسي = 100 أوقية/وحدة. قيمة حركة $1 لـ 1 لوت هي $100.
-    lot_size = risk_amount / (stop_loss_distance * 100)
+    # بما أن الرمز هو XAUT/USDT (الذهب الرمزي)، نفترض نفس القياسات للذهب التقليدي
+    lot_size = risk_amount / (stop_loss_distance * 100) 
     
     lot_size = max(0.01, round(lot_size, 2))
-    asset_info = "XAUUSD (Lot=100 units)"
+    asset_info = "XAUT/USDT (Lot=100 units)"
     
     return lot_size, asset_info
 
@@ -447,12 +448,11 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
 def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
     """
     تجلب بيانات الشموع (OHLCV) للرمز والفاصل الزمني المحدد باستخدام CCXT (Bybit).
-    تم حذف الاحتياطي YFinance.
     """
     
     # 1. محاولة جلب البيانات من CCXT (Bybit)
     try:
-        # إنشاء مثيل CCXT (نحاول بدون مفتاح API أولاً)
+        # إنشاء مثيل CCXT 
         exchange = getattr(ccxt, CCXT_EXCHANGE)()
         
         # إذا كان BYBIT_API_KEY و BYBIT_SECRET موجودين في متغيرات البيئة، استخدمهما
@@ -464,7 +464,7 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
         
         ohlcv = exchange.fetch_ohlcv(symbol, ccxt_timeframe, limit=limit)
         
-        # نتحقق من وجود الـ 200 شمعة
+        # نتحقق من وجود الشموع
         if ohlcv and len(ohlcv) >= limit: 
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -481,9 +481,9 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
         return pd.DataFrame() # إرجاع DataFrame فارغ
 
 def fetch_current_price_ccxt(symbol: str) -> float or None:
-    """جلب السعر الحالي الفوري لرمز XAU/USDT (الأولوية القصوى لـ CCXT للدقة)."""
+    """جلب السعر الحالي الفوري لرمز XAUT/USDT (الأولوية القصوى لـ CCXT للدقة)."""
     try:
-        # إنشاء مثيل CCXT (نحاول بدون مفتاح API أولاً)
+        # إنشاء مثيل CCXT 
         exchange = getattr(ccxt, CCXT_EXCHANGE)()
         
         # إذا كان BYBIT_API_KEY و BYBIT_SECRET موجودين في متغيرات البيئة، استخدمهما
@@ -553,7 +553,7 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         data_1m = fetch_ohlcv_data(symbol, "1m", limit=200)
         data_5m = fetch_ohlcv_data(symbol, "5m", limit=200)
         
-        DISPLAY_SYMBOL = "XAUUSD" 
+        DISPLAY_SYMBOL = "XAUUSD" # <--- العرض الجمالي
         
         # ************** شرط البيانات الكافية **************
         # نطلب 200 شمعة دقيقة و 200 شمعة 5 دقائق (40 شمعة 5 دقائق على الأقل)
@@ -663,7 +663,7 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         # تم تعديل رسالة الخطأ هنا
         return f"❌ فشل في جلب بيانات التداول لـ {DISPLAY_SYMBOL} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
-# =============== باقي الكود (بدون تغيير) ===============
+# =============== باقي الكود (تم تعديل دالة جلب السعر) ===============
 # ... (جميع دوال الأوامر والقوائم المتبقية لا تحتاج لتعديل لأنها تستخدم المتغيرات الجديدة)
 def user_menu():
     return ReplyKeyboardMarkup(
@@ -792,7 +792,7 @@ async def prompt_trade_result(msg: types.Message, state: FSMContext):
          return
          
     await state.set_state(AdminStates.waiting_trade_result_input)
-    await msg.reply("يرجى إدخال ملخص نتيجة الصفقة اليدوية بالترتيب التالي (افصل بينهما بمسافة):\n**الرمز العمل اللوت الربح/الخسارة**\n\nمثال: `XAU/USD BUY 0.05 -2.50`")
+    await msg.reply("يرجى إدخال ملخص نتيجة الصفقة اليدوية بالترتيب التالي (افصل بينهما بمسافة):\n**الرمز العمل اللوت الربح/الخسارة**\n\nمثال: `XAUT/USDT BUY 0.05 -2.50`")
 
 @dp.message(AdminStates.waiting_trade_pnl)
 async def process_trade_pnl_after_entry(msg: types.Message, state: FSMContext):
@@ -840,7 +840,7 @@ async def process_manual_trade_result(msg: types.Message, state: FSMContext):
         save_admin_trade_result(symbol, action, lots, pnl)
         new_capital = get_admin_financial_status()
         
-        display_symbol = "XAUUSD" if symbol == "GC=F" else symbol
+        display_symbol = "XAUUSD" 
         
         await msg.reply(
             f"✅ تم تسجيل الصفقة اليدوية: {display_symbol} ({action})، PnL: ${pnl:,.2f}.\n"
@@ -848,7 +848,7 @@ async def process_manual_trade_result(msg: types.Message, state: FSMContext):
             reply_markup=admin_menu()
         )
     except ValueError:
-        await msg.reply("❌ صيغة الإدخال غير صحيحة. يرجى اتباع المثال: `XAU/USD BUY 0.05 -2.50`", reply_markup=admin_menu())
+        await msg.reply("❌ صيغة الإدخال غير صحيحة. يرجى اتباع المثال: `XAUT/USDT BUY 0.05 -2.50`", reply_markup=admin_menu())
 
 
 @dp.message(F.text == "تقرير الأداء الأسبوعي 📊")
@@ -906,10 +906,18 @@ async def daily_inventory_report(msg: types.Message):
 
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
-    # نستخدم نفس دالة التحليل للحصول على رسالة السعر المحدثة
-    price_info_msg, _, _, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL) 
-    await msg.reply(price_info_msg)
+    # 🌟 التعديل لحل مشكلة عدم ظهور السعر فوراً: استخدام دالة جلب السعر الفوري المباشرة
+    current_price = fetch_current_price_ccxt(TRADE_SYMBOL) 
     
+    DISPLAY_SYMBOL = "XAUUSD" # العرض الجمالي للمستخدم
+
+    if current_price is not None:
+        price_msg = f"📊 السعر الحالي لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {CCXT_EXCHANGE}):\nالسعر: <b>${current_price:,.2f}</b>\nالوقت: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
+        await msg.reply(price_msg, parse_mode="HTML")
+    else:
+        # رسالة في حال فشل جلب السعر نهائياً
+        await msg.reply(f"❌ فشل جلب السعر اللحظي لـ {DISPLAY_SYMBOL} من {CCXT_EXCHANGE}. يرجى المحاولة لاحقاً.")
+
 @dp.message(F.text == "🔍 الصفقات النشطة")
 async def show_active_trades(msg: types.Message):
     
