@@ -101,9 +101,12 @@ def init_db():
     if conn is None: return
     cursor = conn.cursor()
     
+    # 1. إنشاء الجداول الأساسية إذا لم تكن موجودة
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username VARCHAR(255), joined_at DOUBLE PRECISION, is_banned INTEGER DEFAULT 0, vip_until DOUBLE PRECISION DEFAULT 0.0);
         CREATE TABLE IF NOT EXISTS invite_keys (key VARCHAR(255) PRIMARY KEY, days INTEGER, created_by BIGINT, used_by BIGINT NULL, used_at DOUBLE PRECISION NULL);
+        
+        -- تم إضافة trade_type هنا (للحالات الجديدة)
         CREATE TABLE IF NOT EXISTS trades (trade_id TEXT PRIMARY KEY, sent_at DOUBLE PRECISION, action VARCHAR(10), entry_price DOUBLE PRECISION, take_profit DOUBLE PRECISION, stop_loss DOUBLE PRECISION, status VARCHAR(50) DEFAULT 'ACTIVE', exit_status VARCHAR(50) DEFAULT 'NONE', close_price DOUBLE PRECISION NULL, user_count INTEGER, trade_type VARCHAR(50) DEFAULT 'SCALPING');
         
         CREATE TABLE IF NOT EXISTS admin_performance (
@@ -118,6 +121,20 @@ def init_db():
     """)
     conn.commit()
     
+    # 2. **التعامل مع جداول المستخدمين القديمة (Migration Fix)**
+    # محاولة إضافة عمود 'trade_type' لجدول 'trades' في حالة وجوده وعدم وجود العمود
+    try:
+        cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='trades' and column_name='trade_type'")
+        if cursor.fetchone() is None:
+            print("⚠️ اكتشاف جدول 'trades' قديم. جارٍ إضافة عمود 'trade_type'...")
+            cursor.execute("ALTER TABLE trades ADD COLUMN trade_type VARCHAR(50) DEFAULT 'SCALPING'")
+            conn.commit()
+            print("✅ تم تحديث جدول 'trades' بنجاح.")
+    except Exception as e:
+        # إذا لم يكن الجدول موجوداً أساساً، سيعالجه CREATE TABLE IF NOT EXISTS في الخطوة السابقة
+        print(f"⚠️ فشل تحديث جدول 'trades' (قد يكون بسبب عدم وجوده). {e}")
+        
+    # 3. إعداد رأس مال الأدمن الافتراضي
     cursor.execute("SELECT value_float FROM admin_performance WHERE record_type = 'CAPITAL' ORDER BY timestamp DESC LIMIT 1")
     if cursor.fetchone() is None:
         cursor.execute("""
@@ -255,6 +272,7 @@ def save_new_trade(action, entry, tp, sl, user_count, trade_type):
     cursor = conn.cursor()
     trade_id = "TRADE-" + str(uuid.uuid4()).split('-')[0]
     
+    # ⚠️ تم التأكد من وجود trade_type في الاستعلام
     cursor.execute("""
         INSERT INTO trades (trade_id, sent_at, action, entry_price, take_profit, stop_loss, user_count, trade_type)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -268,6 +286,7 @@ def get_active_trades():
     conn = get_db_connection()
     if conn is None: return []
     cursor = conn.cursor()
+    # ⚠️ تم التأكد من وجود trade_type في الاستعلام
     cursor.execute("""
         SELECT trade_id, action, entry_price, take_profit, stop_loss, trade_type
         FROM trades 
@@ -561,7 +580,7 @@ def calculate_adx(df, window=14):
         return series.ewm(com=periods - 1, adjust=False).mean()
         
     df['+DMS'] = smooth(df['+DM'], window)
-    df['-DMS'] = smooth(df['-DM'], window)
+    df['-DMS'] = smooth(df['+DM'], window)
     df['TRS'] = smooth(df['tr'], window)
     
     # Directional Indicators (DI)
@@ -782,7 +801,7 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
 - **SMA 200 (5m):** {latest_sma_200_5m:,.2f}
 - **الاتجاهات (5m/15m/30m/1h):** {htf_trend_5m[0]}/{htf_trend_15m[0]}/{htf_trend_30m[0]}/{htf_trend_1h[0]}
 """
-            return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance, trade_type
+            return price_info_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance, trade_type
         
         # ❌ رسالة الرفض النهائي (عندما تكون HOLD)
         else:
@@ -1020,7 +1039,8 @@ async def analyze_market_now(msg: types.Message):
     
     await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
     
-    price_info_msg, confidence, action, _, _, _, _, trade_type = get_signal_and_confidence(TRADE_SYMBOL)
+    # ⚠️ استرجاع كافة القيم من الدالة، حتى تلك غير المستخدمة هنا مباشرة
+    price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL)
     confidence_percent = confidence * 100
     threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
     
