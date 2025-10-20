@@ -43,9 +43,6 @@ ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAUT/USDT")
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
 ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) 
 
-# ⚠️ تم حذف تعريف BYBIT_API_KEY و BYBIT_SECRET من هنا
-# سنقوم باستدعائهما مباشرةً داخل دالة CCXT
-
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.90")) 
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) 
 ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) 
@@ -414,7 +411,7 @@ def generate_weekly_performance_report():
         report += "\n\n⚠️ لم يتم تسجيل أي صفقات خاصة خلال هذه الفترة."
     return report
     
-# =============== دالة حساب حجم اللوت (مُخصَّصة للأدمن) (بدون تغيير) ===============
+# =============== دالة حساب حجم اللوت (مُخصَّصة للأدمن) - تم الإبقاء عليها ولكنها غير مستخدمة الآن ===============
 def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tuple[float, str]:
     """
     يحسب حجم اللوت المناسب بناءً على رأس مال الأدمن والمخاطرة (2%).
@@ -446,7 +443,6 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
     """
     
     try:
-        # 🌟🌟🌟 الإصلاح: قراءة المفاتيح مباشرةً عند الحاجة 🌟🌟🌟
         api_key = os.getenv("BYBIT_API_KEY", "")
         secret = os.getenv("BYBIT_SECRET", "")
         
@@ -457,7 +453,6 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
              exchange_config = {'apiKey': api_key, 'secret': secret}
              
         exchange = exchange_class(exchange_config)
-        # 🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟
         
         exchange.load_markets()
         
@@ -479,7 +474,6 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
 def fetch_current_price_ccxt(symbol: str) -> float or None:
     """جلب السعر الحالي الفوري لرمز XAUT/USDT (الأولوية القصوى لـ CCXT للدقة)."""
     try:
-        # 🌟🌟🌟 الإصلاح: قراءة المفاتيح مباشرةً عند الحاجة 🌟🌟🌟
         api_key = os.getenv("BYBIT_API_KEY", "")
         secret = os.getenv("BYBIT_SECRET", "")
         
@@ -490,7 +484,6 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
              exchange_config = {'apiKey': api_key, 'secret': secret}
              
         exchange = exchange_class(exchange_config)
-        # 🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟
              
         exchange.load_markets()
         ticker = exchange.fetch_ticker(symbol)
@@ -770,6 +763,9 @@ async def process_new_capital(msg: types.Message, state: FSMContext):
     except ValueError:
         await msg.reply("❌ قيمة رأس المال غير صحيحة. يرجى إدخال رقم موجب فقط.", reply_markup=admin_menu())
 
+# ----------------------------------------------------------------------------------
+# دالة تحليل خاص (VIP) 👤 - تم تعديلها لإزالة حساب حجم اللوت والمخاطرة 2%
+# ----------------------------------------------------------------------------------
 @dp.message(F.text == "تحليل خاص (VIP) 👤")
 async def analyze_private_pair(msg: types.Message):
     if msg.from_user.id != ADMIN_ID: await msg.answer("🚫 هذه الميزة خاصة بالإدمن."); return
@@ -779,7 +775,6 @@ async def analyze_private_pair(msg: types.Message):
     price_info_msg, confidence, action, entry, sl, tp, sl_distance = get_signal_and_confidence(ADMIN_TRADE_SYMBOL)
     
     confidence_percent = confidence * 100
-    current_capital = get_admin_financial_status()
     
     # ⚠️ التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
     if confidence == 0.0 and sl == 0.0 and "لا تتوفر" in price_info_msg:
@@ -789,9 +784,6 @@ async def analyze_private_pair(msg: types.Message):
     if action == "HOLD":
         await msg.answer(f"💡 لا توجد إشارة واضحة (HOLD) على XAUUSD.\nالثقة: {confidence_percent:.2f}%.\n{price_info_msg}", parse_mode="HTML")
         return
-
-    lot_size, asset_info = calculate_lot_size_for_admin(ADMIN_TRADE_SYMBOL, sl_distance)
-    risk_amount = current_capital * ADMIN_RISK_PER_TRADE
     
     private_msg = f"""
 {('🟢' if action == 'BUY' else '🔴')} <b>YOUR PERSONAL TRADE - GOLD (XAUUSD)</b> {('🟢' if action == 'BUY' else '🔴')}
@@ -802,48 +794,18 @@ async def analyze_private_pair(msg: types.Message):
 🎯 **TARGET (TP):** ${tp:,.2f}
 🛑 **STOP LOSS (SL):** ${sl:,.2f}
 🔒 **SUCCESS RATE:** {confidence_percent:.2f}%
+⚖️ **RISK/REWARD:** 1:3 (SL/TP)
 ━━━━━━━━━━━━━━━
-📊 **خطة إدارة المخاطر الشخصية (2%):**
-* **رأس مالك الحالي:** <b>${current_capital:,.2f}</b>
-* **مخاطرتك لكل صفقة:** <b>{ADMIN_RISK_PER_TRADE * 100:.0f}%</b> (${risk_amount:,.2f})
-* **مسافة الـ SL (بالدولار/وحدة):** {sl_distance:,.2f}
-* **حجم اللوت المناسب:** <b>{lot_size:.2f}</b> لوت
+**📊 ملاحظة هامة (إدارة المخاطر):**
+تم تحديد نقاط الدخول والخروج فنيًا. يرجى **تحديد حجم اللوت** المناسب لرأس مالك وإستراتيجية المخاطرة الخاصة بك يدوياً.
 """
     await msg.answer(private_msg, parse_mode="HTML")
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ دخلت الصفقة بهذا اللوت", callback_data=f"track_trade_entry_{action}_{ADMIN_TRADE_SYMBOL}_{lot_size:.2f}")],
-        [InlineKeyboardButton(text="❌ لم أدخل الصفقة", callback_data="track_trade_no")]
-    ])
-    await msg.answer("❓ **هل دخلت هذه الصفقة؟** (اضغط لتتبع الأداء)", reply_markup=keyboard)
-
-@dp.callback_query(F.data.startswith("track_trade_entry_"))
-async def process_admin_trade_entry(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return
-    
-    try:
-        _, action, symbol, lots_str = call.data.split('_')
-        lots = float(lots_str)
-    except ValueError:
-        await call.message.edit_text("❌ خطأ في بيانات التتبع. حاول مجدداً.")
-        await call.answer()
-        return
-    
-    await state.set_data({'action': action, 'symbol': symbol, 'lots': lots})
-    await state.set_state(AdminStates.waiting_trade_pnl)
-    
-    await call.message.edit_text(
-        f"✅ تم تأكيد دخولك صفقة {action} على XAUUSD بحجم لوت: {lots:.2f}.\n\n"
-        "الآن، عند إغلاق الصفقة (ربح/خسارة)، أدخل **صافي الربح أو الخسارة بالدولار** (مثال: **+6.50** أو **-2.00**):"
-    )
-    await call.answer()
-    
-@dp.callback_query(F.data == "track_trade_no")
-async def process_admin_trade_no_entry(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("👍 تم إلغاء تتبع الصفقة. يمكنك إدخال النتيجة لاحقاً يدوياً.")
-    await call.answer()
-
+    # تم حذف أزرار التتبع الآلي
+    await msg.answer("❓ **هل دخلت هذه الصفقة؟** (استخدم 'تسجيل نتيجة صفقة 📝' لتسجيل النتيجة يدوياً)", parse_mode="HTML")
+# ----------------------------------------------------------------------------------
+# تم حذف دالتي Callbacks لتتبع الصفقة (track_trade_entry_ و track_trade_no)
+# ----------------------------------------------------------------------------------
 
 @dp.message(F.text == "تسجيل نتيجة صفقة 📝")
 async def prompt_trade_result(msg: types.Message, state: FSMContext):
@@ -937,6 +899,9 @@ async def admin_panel(msg: types.Message):
         return
     await msg.reply("🎛️ مرحبًا بك في لوحة تحكم الأدمن!", reply_markup=admin_menu())
 
+# ----------------------------------------------------------------------------------
+# دالة تحليل فوري ⚡️ - تم تصحيح رسالة الإخراج
+# ----------------------------------------------------------------------------------
 @dp.message(F.text == "تحليل فوري ⚡️")
 async def analyze_market_now(msg: types.Message):
     if msg.from_user.id != ADMIN_ID and not is_user_vip(msg.from_user.id): 
@@ -945,7 +910,6 @@ async def analyze_market_now(msg: types.Message):
     
     await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
     
-    # ⚠️ التحليل هنا لن يرسل صفقة بل يعطي تقرير عن حالة السوق والتحليل
     price_info_msg, confidence, action, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
     confidence_percent = confidence * 100
     threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
@@ -957,15 +921,16 @@ async def analyze_market_now(msg: types.Message):
     
     # (1) إذا لم تتوفر إشارة أساساً (HOLD)
     if action == "HOLD":
-         await msg.answer(f"💡 لا توجد إشارة واضحة (HOLD). لم يتم إرسال صفقة.")
+         await msg.answer(f"💡 لا توجد إشارة واضحة (HOLD).\nالثقة: {confidence_percent:.2f}%. لم يتم إرسال صفقة.")
     
-    # (2) إذا كانت الثقة كافية (90% أو أعلى)
+    # (2) إذا كانت الثقة كافية (90% أو أعلى) - تم تصحيح الرسالة هنا
     elif confidence >= CONFIDENCE_THRESHOLD:
-         await msg.answer(f"✅ تم إيجاد إشارة فائقة القوة ({action}) على XAUUSD!\nنسبة الثقة: <b>{confidence_percent:.2f}%</b> (أعلى من المطلوب {threshold_percent}%).")
+         await msg.answer(f"✅ تم إيجاد إشارة فائقة القوة ({action}) على XAUUSD!\nنسبة الثقة: <b>{confidence_percent:.2f}%</b> (أعلى من المطلوب {threshold_percent}%).\n**تم إرسال الإشارة التلقائية لـ VIP.**")
     
-    # (3) إذا كانت الثقة غير كافية (أقل من 90% ولكن الإشارة ليست HOLD)
+    # (3) إذا كانت الثقة غير كافية (أقل من 90% ولكن الإشارة ليست HOLD) - تم تصحيح الرسالة هنا
     else:
          await msg.answer(f"⚠️ الإشارة موجودة ({action}) على XAUUSD، لكن نسبة الثقة <b>{confidence_percent:.2f}%</b> أقل من المطلوب ({threshold_percent}%). لم يتم إرسال صفقة.")
+# ----------------------------------------------------------------------------------
 
 @dp.message(F.text == "📊 جرد الصفقات اليومي")
 async def daily_inventory_report(msg: types.Message):
@@ -1343,8 +1308,6 @@ async def scheduled_tasks():
 async def trade_monitoring_and_alert():
     """مهمة المراقبة المستمرة وإرسال التنبيهات/الإشارات التلقائية."""
     await asyncio.sleep(60) # ابدأ بعد دقيقة من تشغيل البوت
-    
-    # لم نعد نستخدم send_analysis_alert لإرسال تنبيه كل 4 ساعات، سنركز على الإرسال التلقائي
 
     while True:
         
