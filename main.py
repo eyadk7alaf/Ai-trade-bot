@@ -43,10 +43,13 @@ ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAUT/USDT")
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
 ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) 
 
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.90")) # <--- متغير الثقة المطلوب
-TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) # فاصل متابعة الصفقات بالثواني
-ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) # 4 ساعات (مهمة التنبيهات)
-TRADE_ANALYSIS_INTERVAL = int(os.getenv("TRADE_ANALYSIS_INTERVAL", "60")) # <--- فاصل تحليل السوق (ثانية)
+# ⚠️ تم حذف تعريف BYBIT_API_KEY و BYBIT_SECRET من هنا
+# سنقوم باستدعائهما مباشرةً داخل دالة CCXT
+
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.90")) 
+TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) 
+ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) 
+TRADE_ANALYSIS_INTERVAL = int(os.getenv("TRADE_ANALYSIS_INTERVAL", "60")) 
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 
@@ -434,7 +437,7 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
     return lot_size, asset_info
 
 # ===============================================
-# === دوال جلب البيانات الفورية ===
+# === دوال جلب البيانات الفورية (التعديل تم هنا) ===
 # ===============================================
 
 def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
@@ -443,14 +446,21 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
     """
     
     try:
-        exchange = getattr(ccxt, CCXT_EXCHANGE)()
+        # 🌟🌟🌟 الإصلاح: قراءة المفاتيح مباشرةً عند الحاجة 🌟🌟🌟
+        api_key = os.getenv("BYBIT_API_KEY", "")
+        secret = os.getenv("BYBIT_SECRET", "")
         
-        if CCXT_EXCHANGE.lower() == 'bybit' and BYBIT_API_KEY and BYBIT_SECRET:
-             exchange = getattr(ccxt, CCXT_EXCHANGE)({'apiKey': BYBIT_API_KEY, 'secret': BYBIT_SECRET})
+        exchange_class = getattr(ccxt, CCXT_EXCHANGE)
+        
+        exchange_config = {}
+        if CCXT_EXCHANGE.lower() == 'bybit' and api_key and secret:
+             exchange_config = {'apiKey': api_key, 'secret': secret}
+             
+        exchange = exchange_class(exchange_config)
+        # 🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟
         
         exchange.load_markets()
         
-        # ✅ الآن نستخدم المتغير timeframe مباشرة
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         
         if ohlcv and len(ohlcv) >= limit: 
@@ -469,10 +479,18 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
 def fetch_current_price_ccxt(symbol: str) -> float or None:
     """جلب السعر الحالي الفوري لرمز XAUT/USDT (الأولوية القصوى لـ CCXT للدقة)."""
     try:
-        exchange = getattr(ccxt, CCXT_EXCHANGE)()
+        # 🌟🌟🌟 الإصلاح: قراءة المفاتيح مباشرةً عند الحاجة 🌟🌟🌟
+        api_key = os.getenv("BYBIT_API_KEY", "")
+        secret = os.getenv("BYBIT_SECRET", "")
         
-        if CCXT_EXCHANGE.lower() == 'bybit' and BYBIT_API_KEY and BYBIT_SECRET:
-             exchange = getattr(ccxt, CCXT_EXCHANGE)({'apiKey': BYBIT_API_KEY, 'secret': BYBIT_SECRET})
+        exchange_class = getattr(ccxt, CCXT_EXCHANGE)
+
+        exchange_config = {}
+        if CCXT_EXCHANGE.lower() == 'bybit' and api_key and secret:
+             exchange_config = {'apiKey': api_key, 'secret': secret}
+             
+        exchange = exchange_class(exchange_config)
+        # 🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟🌟
              
         exchange.load_markets()
         ticker = exchange.fetch_ticker(symbol)
@@ -526,7 +544,7 @@ class AccessMiddleware(BaseMiddleware):
 
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل ===============
+# =============== وظائف التداول والتحليل (بدون تغيير) ===============
 
 def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float, float]:
     """
@@ -704,7 +722,7 @@ async def send_vip_trade_signal():
          print("💡 لا توجد إشارة واضحة (HOLD).")
 
 
-# =============== باقي الكود (تم تعديل دالة analyze_market_now) ===============
+# =============== باقي الكود (بدون تغيير) ===============
 def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -982,6 +1000,7 @@ async def show_active_trades(msg: types.Message):
     report = "⏳ **قائمة الصفقات النشطة حالياً (XAUUSD)**\n━━━━━━━━━━━━━━━"
     
     for trade in active_trades:
+        trade_id = trade['trade_id']
         action = trade['action']
         entry = trade['entry_price']
         tp = trade['take_profit']
