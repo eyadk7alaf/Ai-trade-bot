@@ -38,9 +38,9 @@ class UserStates(StatesGroup):
 # =============== إعداد البوت والمتغيرات (من Environment Variables) ===============
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
-TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAUT/USDT") # <--- تم تعديل القيمة الافتراضية
+TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAUT/USDT") # <--- (1) تم تعديل القيمة الافتراضية
 CCXT_EXCHANGE = os.getenv("CCXT_EXCHANGE", "bybit") 
-ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAUT/USDT") # <--- تم تعديل القيمة الافتراضية
+ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAUT/USDT") # <--- (1) تم تعديل القيمة الافتراضية
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
 ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) 
 
@@ -70,7 +70,6 @@ bot = Bot(token=BOT_TOKEN,
 dp = Dispatcher(storage=MemoryStorage())
 
 # =============== قاعدة بيانات PostgreSQL (بدون تغيير) ===============
-# ... (باقي دوال قاعدة البيانات هنا - لم تتغير)
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("🚫 لم يتم العثور على DATABASE_URL. يرجى التأكد من ربط PostgreSQL بـ Railway.")
@@ -243,7 +242,6 @@ def create_invite_key(admin_id, days):
     return key
 
 # === دوال إدارة الصفقات (بدون تغيير) ===
-# ... (باقي دوال إدارة الصفقات هنا - لم تتغير)
 def save_new_trade(action, entry, tp, sl, user_count):
     conn = get_db_connection()
     if conn is None: return None
@@ -328,7 +326,6 @@ def get_daily_trade_report():
     return report_msg
 
 # =============== دوال إدارة الأداء الشخصي (بدون تغيير) ===============
-# ... (باقي دوال الأداء الشخصي هنا - لم تتغير)
 def get_admin_financial_status():
     conn = get_db_connection()
     if conn is None: return ADMIN_CAPITAL_DEFAULT
@@ -418,7 +415,6 @@ def generate_weekly_performance_report():
     return report
     
 # =============== دالة حساب حجم اللوت (مُخصَّصة للأدمن) (بدون تغيير) ===============
-# ... (باقي دالة حساب حجم اللوت هنا - لم تتغير)
 def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tuple[float, str]:
     """
     يحسب حجم اللوت المناسب بناءً على رأس مال الأدمن والمخاطرة (2%).
@@ -460,9 +456,11 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
              exchange = getattr(ccxt, CCXT_EXCHANGE)({'apiKey': BYBIT_API_KEY, 'secret': BYBIT_SECRET})
         
         exchange.load_markets()
-        ccxt_timeframe = timeframe.replace('m', '1m') # تحويل الفاصل الزمني
         
-        ohlcv = exchange.fetch_ohlcv(symbol, ccxt_timeframe, limit=limit)
+        # ❌ (تم حذف السطر الخاطئ الذي كان يسبب Invalid period!): ccxt_timeframe = timeframe.replace('m', '1m') 
+        
+        # ✅ الآن نستخدم المتغير timeframe مباشرة
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         
         # نتحقق من وجود الشموع
         if ohlcv and len(ohlcv) >= limit: 
@@ -500,7 +498,6 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
         return None
 
 # =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) (بدون تغيير) ===============
-# ... (باقي الـ Middleware هنا - لم تتغير)
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
         self, handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -664,7 +661,6 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
         return f"❌ فشل في جلب بيانات التداول لـ {DISPLAY_SYMBOL} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
 # =============== باقي الكود (تم تعديل دالة جلب السعر) ===============
-# ... (جميع دوال الأوامر والقوائم المتبقية لا تحتاج لتعديل لأنها تستخدم المتغيرات الجديدة)
 def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -882,19 +878,17 @@ async def analyze_market_now(msg: types.Message):
     
     await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
     
-    sent_successfully = await send_trade_signal(admin_triggered=True)
+    # ❌ (تم حذف دالة إرسال الإشارة التلقائية المؤقتة لتركيز الاختبار على التحليل الخاص)
     
-    if sent_successfully:
-        await msg.answer("✅ تم إرسال صفقة VIP بنجاح إلى المشتركين.")
+    # يتم استدعاء التحليل الخاص فقط لإظهار الرسالة
+    price_info_msg, confidence, action, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
+    confidence_percent = confidence * 100
+    
+    if action == "HOLD":
+         await msg.answer(f"💡 لا توجد إشارة واضحة (HOLD). لم يتم إرسال صفقة.")
     else:
-        price_info_msg, confidence, action, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
-        confidence_percent = confidence * 100
-        
-        if action == "HOLD":
-             await msg.answer("💡 لا توجد إشارة واضحة (HOLD). لم يتم إرسال صفقة.")
-        else:
-             await msg.answer(f"⚠️ الإشارة موجودة ({action}) على XAUUSD، لكن نسبة الثقة {confidence_percent:.2f}% أقل من المطلوب ({int(CONFIDENCE_THRESHOLD*100)}%). لم يتم إرسال صفقة.")
-
+         await msg.answer(f"⚠️ الإشارة موجودة ({action}) على XAUUSD، لكن نسبة الثقة {confidence_percent:.2f}% أقل من المطلوب ({int(CONFIDENCE_THRESHOLD*100)}%). لم يتم إرسال صفقة.")
+    
 @dp.message(F.text == "📊 جرد الصفقات اليومي")
 async def daily_inventory_report(msg: types.Message):
     if msg.from_user.id != ADMIN_ID:
