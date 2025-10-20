@@ -3,7 +3,6 @@ import time
 import os
 import psycopg2
 import pandas as pd
-# import yfinance as yf  # <-- تم حذف استيراد yfinance
 import schedule
 import random
 import uuid
@@ -38,20 +37,18 @@ class UserStates(StatesGroup):
 # =============== إعداد البوت والمتغيرات (من Environment Variables) ===============
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
-TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAUT/USDT") # <--- (1) تم تعديل القيمة الافتراضية
+TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAUT/USDT") 
 CCXT_EXCHANGE = os.getenv("CCXT_EXCHANGE", "bybit") 
-ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAUT/USDT") # <--- (1) تم تعديل القيمة الافتراضية
+ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAUT/USDT") 
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
 ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) 
 
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.90"))
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.90")) # <--- متغير الثقة المطلوب
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) # فاصل متابعة الصفقات بالثواني
-ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) 
+ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) # 4 ساعات (مهمة التنبيهات)
+TRADE_ANALYSIS_INTERVAL = int(os.getenv("TRADE_ANALYSIS_INTERVAL", "60")) # <--- فاصل تحليل السوق (ثانية)
 
-# مفاتيح Bybit (ليست ضرورية لبيانات السوق العامة، لكنها ضرورية للتداول الخاص)
-BYBIT_API_KEY = os.getenv("BYBIT_API_KEY") 
-BYBIT_SECRET = os.getenv("BYBIT_SECRET")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
@@ -241,7 +238,7 @@ def create_invite_key(admin_id, days):
     conn.close()
     return key
 
-# === دوال إدارة الصفقات (بدون تغيير) ===
+# === دوال إدارة الصفقات 
 def save_new_trade(action, entry, tp, sl, user_count):
     conn = get_db_connection()
     if conn is None: return None
@@ -429,7 +426,6 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
     risk_amount = capital * risk_percent 
     
     # الذهب: 1 لوت قياسي = 100 أوقية/وحدة. قيمة حركة $1 لـ 1 لوت هي $100.
-    # بما أن الرمز هو XAUT/USDT (الذهب الرمزي)، نفترض نفس القياسات للذهب التقليدي
     lot_size = risk_amount / (stop_loss_distance * 100) 
     
     lot_size = max(0.01, round(lot_size, 2))
@@ -438,7 +434,7 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
     return lot_size, asset_info
 
 # ===============================================
-# === دوال جلب البيانات الفورية (التعديل للعمل مع Bybit فقط) ===
+# === دوال جلب البيانات الفورية ===
 # ===============================================
 
 def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
@@ -446,23 +442,17 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
     تجلب بيانات الشموع (OHLCV) للرمز والفاصل الزمني المحدد باستخدام CCXT (Bybit).
     """
     
-    # 1. محاولة جلب البيانات من CCXT (Bybit)
     try:
-        # إنشاء مثيل CCXT 
         exchange = getattr(ccxt, CCXT_EXCHANGE)()
         
-        # إذا كان BYBIT_API_KEY و BYBIT_SECRET موجودين في متغيرات البيئة، استخدمهما
         if CCXT_EXCHANGE.lower() == 'bybit' and BYBIT_API_KEY and BYBIT_SECRET:
              exchange = getattr(ccxt, CCXT_EXCHANGE)({'apiKey': BYBIT_API_KEY, 'secret': BYBIT_SECRET})
         
         exchange.load_markets()
         
-        # ❌ (تم حذف السطر الخاطئ الذي كان يسبب Invalid period!): ccxt_timeframe = timeframe.replace('m', '1m') 
-        
         # ✅ الآن نستخدم المتغير timeframe مباشرة
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         
-        # نتحقق من وجود الشموع
         if ohlcv and len(ohlcv) >= limit: 
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -470,21 +460,17 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
             df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
             return df
         
-        # إذا كانت البيانات قليلة، نطلق خطأ للتعامل معه
         raise Exception(f"CCXT ({CCXT_EXCHANGE}) returned insufficient data. Needed {limit}, got {len(ohlcv) if ohlcv else 0}.")
 
     except Exception as e:
-        # لم يعد لدينا احتياطي YFinance (GC=F)
         print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}): {e}")
-        return pd.DataFrame() # إرجاع DataFrame فارغ
+        return pd.DataFrame() 
 
 def fetch_current_price_ccxt(symbol: str) -> float or None:
     """جلب السعر الحالي الفوري لرمز XAUT/USDT (الأولوية القصوى لـ CCXT للدقة)."""
     try:
-        # إنشاء مثيل CCXT 
         exchange = getattr(ccxt, CCXT_EXCHANGE)()
         
-        # إذا كان BYBIT_API_KEY و BYBIT_SECRET موجودين في متغيرات البيئة، استخدمهما
         if CCXT_EXCHANGE.lower() == 'bybit' and BYBIT_API_KEY and BYBIT_SECRET:
              exchange = getattr(ccxt, CCXT_EXCHANGE)({'apiKey': BYBIT_API_KEY, 'secret': BYBIT_SECRET})
              
@@ -540,34 +526,32 @@ class AccessMiddleware(BaseMiddleware):
 
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل (تم تعديل رسالة الخطأ) ===============
+# =============== وظائف التداول والتحليل ===============
 
 def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, float, float, float]:
     """
     تحليل ذكي باستخدام 4 فلاتر (EMA 1m, RSI, ATR, EMA 5m) لتحديد إشارة فائقة القوة.
     """
     try:
+        # جلب بيانات الشموع
         data_1m = fetch_ohlcv_data(symbol, "1m", limit=200)
         data_5m = fetch_ohlcv_data(symbol, "5m", limit=200)
         
-        DISPLAY_SYMBOL = "XAUUSD" # <--- العرض الجمالي
+        DISPLAY_SYMBOL = "XAUUSD" 
         
         # ************** شرط البيانات الكافية **************
-        # نطلب 200 شمعة دقيقة و 200 شمعة 5 دقائق (40 شمعة 5 دقائق على الأقل)
         if data_1m.empty or len(data_1m) < 200 or data_5m.empty or len(data_5m) < 40: 
-            # تم تعديل رسالة الخطأ هنا
             return f"لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}. (المصدر: {CCXT_EXCHANGE})", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
-        # ************** جلب السعر اللحظي (للتنفيذ الدقيق) **************
+        # ************** جلب السعر اللحظي **************
         current_spot_price = fetch_current_price_ccxt(symbol)
         price_source = CCXT_EXCHANGE
         
         if current_spot_price is None:
-            # في أسوأ الأحوال، نستخدم سعر الشمعة المغلقة من البيانات التاريخية
             current_spot_price = data_1m['Close'].iloc[-1].item()
-            price_source = f"تحليل ({CCXT_EXCHANGE})" # رسالة مصدر معدلة
+            price_source = f"تحليل ({CCXT_EXCHANGE})" 
             
-        entry_price = current_spot_price # نقطة الدخول هي السعر اللحظي الأكثر دقة
+        entry_price = current_spot_price 
         
         # HTF Trend (5m)
         data_5m['EMA_10'] = data_5m['Close'].ewm(span=10, adjust=False).mean()
@@ -651,16 +635,76 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
                 
             stop_loss_distance = abs(entry_price - stop_loss) 
         
-        # ************** رسالة العرض تظهر مصدر السعر الفعلي **************
         price_msg = f"📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {price_source}، الاتجاه الأكبر: {htf_trend}):\nالسعر: ${entry_price:,.2f}\nالوقت: {latest_time} UTC"
         
         return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance 
         
     except Exception as e:
-        # تم تعديل رسالة الخطأ هنا
-        return f"❌ فشل في جلب بيانات التداول لـ {DISPLAY_SYMBOL} أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
+        print(f"❌ فشل في جلب بيانات التداول لـ XAUUSD أو التحليل: {e}")
+        return f"❌ فشل في جلب بيانات التداول لـ XAUUSD أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0
 
-# =============== باقي الكود (تم تعديل دالة جلب السعر) ===============
+
+# === دالة الإرسال التلقائي الجديدة ===
+async def send_vip_trade_signal():
+    
+    # 1. تحقق من عدم وجود صفقات نشطة بالفعل
+    active_trades = get_active_trades()
+    if len(active_trades) > 0:
+        print(f"🤖 يوجد {len(active_trades)} صفقات نشطة. تم تخطي التحليل التلقائي.")
+        return
+
+    # 2. إجراء التحليل
+    try:
+        price_info_msg, confidence, action, entry, sl, tp, sl_distance = get_signal_and_confidence(TRADE_SYMBOL)
+    except Exception as e:
+        print(f"❌ خطأ حرج أثناء التحليل التلقائي: {e}")
+        return
+
+    confidence_percent = confidence * 100
+    DISPLAY_SYMBOL = "XAUUSD" 
+    
+    # 3. تحقق من شرط الثقة (90% أو أعلى)
+    if action != "HOLD" and confidence >= CONFIDENCE_THRESHOLD:
+        
+        print(f"✅ إشارة {action} قوية جداً تم العثور عليها (الثقة: {confidence_percent:.2f}%). جارٍ الإرسال...")
+        
+        trade_msg = f"""
+{('🟢' if action == 'BUY' else '🔴')} <b>ALPHA TRADE ALERT - VIP SIGNAL!</b> {('🟢' if action == 'BUY' else '🔴')}
+━━━━━━━━━━━━━━━
+📈 **PAIR:** XAUUSD 
+🔥 **ACTION:** {action} (Market Execution)
+💰 **ENTRY:** ${entry:,.2f}
+🎯 **TAKE PROFIT (TP):** ${tp:,.2f}
+🛑 **STOP LOSS (SL):** ${sl:,.2f}
+🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b> (90%+)
+⚖️ **RISK/REWARD:** 1:3 (SL/TP)
+━━━━━━━━━━━━━━━
+⚠️ نفذ الصفقة **فوراً** على سعر السوق.
+"""
+        # 4. حفظ الصفقة وإرسالها
+        all_users = get_all_users_ids()
+        vip_users = [uid for uid, is_banned in all_users if is_banned == 0 and is_user_vip(uid)]
+        
+        trade_id = save_new_trade(action, entry, tp, sl, len(vip_users))
+        
+        if trade_id:
+            for uid in vip_users:
+                try:
+                    await bot.send_message(uid, trade_msg, parse_mode="HTML")
+                except Exception:
+                    pass
+            
+            # إرسال إشعار للأدمن
+            if ADMIN_ID != 0:
+                 await bot.send_message(ADMIN_ID, f"🔔 **تم إرسال إشارة VIP تلقائية بنجاح!**\nID: {trade_id}", parse_mode="HTML")
+                 
+    elif action != "HOLD":
+         print(f"⚠️ تم العثور على إشارة {action}، لكن الثقة {confidence_percent:.2f}% لم تصل إلى المطلوب {CONFIDENCE_THRESHOLD*100:.0f}%.")
+    else:
+         print("💡 لا توجد إشارة واضحة (HOLD).")
+
+
+# =============== باقي الكود (تم تعديل دالة analyze_market_now) ===============
 def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -719,6 +763,11 @@ async def analyze_private_pair(msg: types.Message):
     confidence_percent = confidence * 100
     current_capital = get_admin_financial_status()
     
+    # ⚠️ التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
+    if confidence == 0.0 and sl == 0.0 and "لا تتوفر" in price_info_msg:
+        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}")
+        return
+        
     if action == "HOLD":
         await msg.answer(f"💡 لا توجد إشارة واضحة (HOLD) على XAUUSD.\nالثقة: {confidence_percent:.2f}%.\n{price_info_msg}", parse_mode="HTML")
         return
@@ -878,17 +927,28 @@ async def analyze_market_now(msg: types.Message):
     
     await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
     
-    # ❌ (تم حذف دالة إرسال الإشارة التلقائية المؤقتة لتركيز الاختبار على التحليل الخاص)
-    
-    # يتم استدعاء التحليل الخاص فقط لإظهار الرسالة
+    # ⚠️ التحليل هنا لن يرسل صفقة بل يعطي تقرير عن حالة السوق والتحليل
     price_info_msg, confidence, action, _, _, _, _ = get_signal_and_confidence(TRADE_SYMBOL)
     confidence_percent = confidence * 100
+    threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
     
+    # ⚠️ التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
+    if confidence == 0.0 and "لا تتوفر" in price_info_msg:
+        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}")
+        return
+    
+    # (1) إذا لم تتوفر إشارة أساساً (HOLD)
     if action == "HOLD":
          await msg.answer(f"💡 لا توجد إشارة واضحة (HOLD). لم يتم إرسال صفقة.")
-    else:
-         await msg.answer(f"⚠️ الإشارة موجودة ({action}) على XAUUSD، لكن نسبة الثقة {confidence_percent:.2f}% أقل من المطلوب ({int(CONFIDENCE_THRESHOLD*100)}%). لم يتم إرسال صفقة.")
     
+    # (2) إذا كانت الثقة كافية (90% أو أعلى)
+    elif confidence >= CONFIDENCE_THRESHOLD:
+         await msg.answer(f"✅ تم إيجاد إشارة فائقة القوة ({action}) على XAUUSD!\nنسبة الثقة: <b>{confidence_percent:.2f}%</b> (أعلى من المطلوب {threshold_percent}%).")
+    
+    # (3) إذا كانت الثقة غير كافية (أقل من 90% ولكن الإشارة ليست HOLD)
+    else:
+         await msg.answer(f"⚠️ الإشارة موجودة ({action}) على XAUUSD، لكن نسبة الثقة <b>{confidence_percent:.2f}%</b> أقل من المطلوب ({threshold_percent}%). لم يتم إرسال صفقة.")
+
 @dp.message(F.text == "📊 جرد الصفقات اليومي")
 async def daily_inventory_report(msg: types.Message):
     if msg.from_user.id != ADMIN_ID:
@@ -900,16 +960,14 @@ async def daily_inventory_report(msg: types.Message):
 
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
-    # 🌟 التعديل لحل مشكلة عدم ظهور السعر فوراً: استخدام دالة جلب السعر الفوري المباشرة
     current_price = fetch_current_price_ccxt(TRADE_SYMBOL) 
     
-    DISPLAY_SYMBOL = "XAUUSD" # العرض الجمالي للمستخدم
+    DISPLAY_SYMBOL = "XAUUSD" 
 
     if current_price is not None:
         price_msg = f"📊 السعر الحالي لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {CCXT_EXCHANGE}):\nالسعر: <b>${current_price:,.2f}</b>\nالوقت: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
         await msg.reply(price_msg, parse_mode="HTML")
     else:
-        # رسالة في حال فشل جلب السعر نهائياً
         await msg.reply(f"❌ فشل جلب السعر اللحظي لـ {DISPLAY_SYMBOL} من {CCXT_EXCHANGE}. يرجى المحاولة لاحقاً.")
 
 @dp.message(F.text == "🔍 الصفقات النشطة")
@@ -1235,7 +1293,7 @@ async def check_open_trades():
             for uid, is_banned_status in all_users:
                  if is_banned_status == 0 and uid != ADMIN_ID and is_user_vip(uid):
                     try:
-                        await bot.send_message(uid, close_msg)
+                        await bot.send_message(uid, close_msg, parse_mode="HTML")
                     except Exception:
                         pass
                         
@@ -1243,7 +1301,7 @@ async def check_open_trades():
                 await bot.send_message(ADMIN_ID, f"🔔 تم إغلاق الصفقة **{trade_id}** بنجاح على: {exit_status}", parse_mode="HTML")
 
 # ===============================================
-# === إعداد المهام المجدولة (Setup Scheduled Tasks) (بدون تغيير) ===
+# === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
 # ===============================================
 
 def is_weekend_closure():
@@ -1251,48 +1309,34 @@ def is_weekend_closure():
     now_utc = datetime.now(timezone.utc) 
     weekday = now_utc.weekday() 
     
-    # التداول الفعلي يغلق حوالي 21:00 بتوقيت UTC يوم الجمعة (4) ويفتح 21:00 بتوقيت UTC يوم الأحد (6)
     if weekday == 5 or (weekday == 6 and now_utc.hour < 21): 
         return True
     return False 
 
 
-async def send_analysis_alert():
-    alert_messages = [
-        "🕵️ محلل الذهب الذكي يعمل الآن! نراقب السوق بدقة فائقة بحثًا عن إشارة VIP.",
-        "⏳ جاري تدقيق البيانات اللحظية للذهب (XAUUSD). ترقبوا، فقد تصل إشارة تداول قوية قريباً!",
-        "💡 يُرجى الانتباه! محرك AlphaTradeAI يُقيّم الآن أنماط الفلترة المتعددة لفرصة ذات ثقة عالية.",
-        "📈 تركيز كامل على XAUUSD. البوت يتابع تحركات السعر، ونستعد لإطلاق صفقة حصرية."
-    ]
-    
-    msg_to_send = random.choice(alert_messages)
-    
-    all_users = get_all_users_ids()
-    
-    for uid, is_banned_status in all_users:
-        if is_banned_status == 0 and uid != ADMIN_ID and is_user_vip(uid):
-            try:
-                await bot.send_message(uid, msg_to_send)
-            except Exception:
-                pass
-                
 async def scheduled_tasks():
     await asyncio.sleep(5) 
     while True:
+        # متابعة الصفقات المفتوحة
         await check_open_trades()
         await asyncio.sleep(TRADE_CHECK_INTERVAL)
         
-async def monitor_market_continously():
-    """مهمة إرسال تنبيهات المراقبة بشكل دوري (4 ساعات)."""
-    await asyncio.sleep(60) 
+async def trade_monitoring_and_alert():
+    """مهمة المراقبة المستمرة وإرسال التنبيهات/الإشارات التلقائية."""
+    await asyncio.sleep(60) # ابدأ بعد دقيقة من تشغيل البوت
+    
+    # لم نعد نستخدم send_analysis_alert لإرسال تنبيه كل 4 ساعات، سنركز على الإرسال التلقائي
+
     while True:
         
         if not is_weekend_closure():
-            await send_analysis_alert()
+            # 1. تحليل السوق وإرسال الإشارة إذا تجاوزت الثقة 90%
+            await send_vip_trade_signal()
         else:
-            print("🤖 السوق مغلق (عطلة نهاية الأسبوع)، تم إيقاف تنبيهات المراقبة.")
+            print("🤖 السوق مغلق (عطلة نهاية الأسبوع)، تم إيقاف التحليل التلقائي.")
             
-        await asyncio.sleep(ALERT_INTERVAL) 
+        # الانتظار للفاصل الزمني المحدد (60 ثانية)
+        await asyncio.sleep(TRADE_ANALYSIS_INTERVAL)
 
 
 async def main():
@@ -1300,8 +1344,11 @@ async def main():
     
     dp.message.middleware(AccessMiddleware())
     
-    asyncio.create_task(scheduled_tasks())
-    asyncio.create_task(monitor_market_continously())
+    # 🌟 مهمة متابعة الصفقات وإغلاقها
+    asyncio.create_task(scheduled_tasks()) 
+    
+    # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية
+    asyncio.create_task(trade_monitoring_and_alert())
     
     await dp.start_polling(bot)
 
