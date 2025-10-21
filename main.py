@@ -132,7 +132,7 @@ def init_db():
         conn.commit()
         print("✅ تم تحديث جدول 'trades' بنجاح. تم إضافة العمود.")
     except psycopg2.errors.DuplicateColumn:
-        # هذا الاستثناء يعني أن العمود موجود بالفعل، وهذا أمر جيد
+        # ⚠️ هذا هو الخطأ الذي ظهر (ERROR: column "trade_type" of relation "trades" already exis)
         print("✅ العمود 'trade_type' موجود بالفعل. تم تخطي التحديث.")
         conn.rollback() 
     except Exception as e:
@@ -278,7 +278,7 @@ def save_new_trade(action, entry, tp, sl, user_count, trade_type):
     cursor = conn.cursor()
     trade_id = "TRADE-" + str(uuid.uuid4()).split('-')[0]
     
-    # ⚠️ تم التأكد من وجود trade_type في الاستعلام (لن نغيره في الحفظ أملاً في أن ينجح)
+    # ⚠️ تم التأكد من وجود trade_type في الاستعلام
     cursor.execute("""
         INSERT INTO trades (trade_id, sent_at, action, entry_price, take_profit, stop_loss, user_count, trade_type)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -1080,7 +1080,7 @@ async def analyze_market_now(msg: types.Message):
 ━━━━━━━━━━━━━━━
 🔎 **الإشارة الحالية:** {action}
 🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
-❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' else 'الثقة غير كافية للدخول')}
+❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' or confidence < 0.1 else 'الثقة غير كافية للدخول')}
 ━━━━━━━━━━━━━━━
 {price_info_msg}
 """
@@ -1123,7 +1123,7 @@ async def analyze_market_now_enhanced(msg: types.Message):
 ━━━━━━━━━━━━━━━
 🔎 **الإشارة الحالية:** {action}
 🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
-❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' else 'الثقة غير كافية للدخول')}
+❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' or confidence < 0.1 else 'الثقة غير كافية للدخول')}
 ━━━━━━━━━━━━━━━
 {price_info_msg}
 """
@@ -1154,29 +1154,33 @@ async def analyze_market_now_enhanced(msg: types.Message):
 
 @dp.message(F.text == "تحليل خاص (VIP) 👤")
 async def analyze_private_pair(msg: types.Message):
-    global SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR 
+    global SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR, CONFIDENCE_THRESHOLD 
     
     if msg.from_user.id != ADMIN_ID: await msg.answer("🚫 هذه الميزة خاصة بالإدمن."); return
     
+    # ⚠️ نستخدم 98% (CONFIDENCE_THRESHOLD) هنا لأن هذا الزر يهدف لاختبار الإشارات القوية
+    TESTING_CONFIDENCE_THRESHOLD = CONFIDENCE_THRESHOLD 
+
     await msg.reply(f"⏳ جارٍ تحليل الزوج الخاص: **XAUUSD** (الذهب)...")
     
     price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(ADMIN_TRADE_SYMBOL)
     
     confidence_percent = confidence * 100
-    threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
+    threshold_percent = int(TESTING_CONFIDENCE_THRESHOLD * 100)
     
-    # ⚠️ التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
+    # ⚠️ التحقق من حالة البيانات أولا
     if confidence == 0.0 and sl == 0.0 and ("لا تتوفر" in price_info_msg or "عرضي" in price_info_msg or "هادئ" in price_info_msg):
         await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}", parse_mode="HTML")
         return
         
-    if action == "HOLD" or confidence < CONFIDENCE_THRESHOLD:
+    # ⚠️ المنطق المُعدَّل: إذا لم تتحقق الثقة المطلوبة (98%)، نظهر رسالة الـ HOLD الواضحة
+    if action == "HOLD" or confidence < TESTING_CONFIDENCE_THRESHOLD:
         status_msg = f"""
 💡 **التحليل الخاص - XAUUSD**
 ━━━━━━━━━━━━━━━
 🔎 **الإشارة الحالية:** {action}
 🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
-❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' else 'الثقة غير كافية للدخول')}
+❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' or confidence < 0.1 else f'الثقة غير كافية للدخول (< {threshold_percent}%)')}
 ━━━━━━━━━━━━━━━
 {price_info_msg}
 
@@ -1185,7 +1189,7 @@ async def analyze_private_pair(msg: types.Message):
         await msg.answer(status_msg, parse_mode="HTML")
         return
     
-    # إذا كانت الإشارة قوية وتجاوزت الثقة المطلوبة
+    # إذا كانت الإشارة قوية وتجاوزت الثقة المطلوبة (هنا 98% أو أعلى)
     rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
     trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
     
