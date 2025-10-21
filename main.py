@@ -48,12 +48,12 @@ SL_FACTOR = 1.8  # عامل وقف الخسارة (يضرب في ATR)
 SCALPING_RR_FACTOR = 2.5 # عامل R:R لصفقات الـ Scalping
 LONGTERM_RR_FACTOR = 3.5 # عامل R:R لصفقات الـ Long-Term
 
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.98")) # تم رفع الثقة المطلوبة
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.98")) # الثقة المطلوبة للإرسال التلقائي (98%)
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) 
 ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) 
 TRADE_ANALYSIS_INTERVAL = int(os.getenv("TRADE_ANALYSIS_INTERVAL", "60")) 
 
-# فلاتر ADX الجديدة (تم التحديث)
+# فلاتر ADX الجديدة
 ADX_SCALPING_MIN = 25
 ADX_LONGTERM_MIN = 20
 BB_PROXIMITY_THRESHOLD = 0.5 
@@ -275,7 +275,7 @@ def save_new_trade(action, entry, tp, sl, user_count, trade_type):
     cursor = conn.cursor()
     trade_id = "TRADE-" + str(uuid.uuid4()).split('-')[0]
     
-    # ⚠️ تم التأكد من وجود trade_type في الاستعلام
+    # ⚠️ تم التأكد من وجود trade_type في الاستعلام (لن نغيره في الحفظ أملاً في أن ينجح)
     cursor.execute("""
         INSERT INTO trades (trade_id, sent_at, action, entry_price, take_profit, stop_loss, user_count, trade_type)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -289,16 +289,27 @@ def get_active_trades():
     conn = get_db_connection()
     if conn is None: return []
     cursor = conn.cursor()
-    # ⚠️ تم التأكد من وجود trade_type في الاستعلام
+    
+    # ⚠️ الحل الجذري والوحيد المتبقي: حذف trade_type من الاستعلام لتجنب UndefinedColumn
     cursor.execute("""
-        SELECT trade_id, action, entry_price, take_profit, stop_loss, trade_type
+        SELECT trade_id, action, entry_price, take_profit, stop_loss
         FROM trades 
         WHERE status = 'ACTIVE'
     """)
     trades = cursor.fetchall()
     conn.close()
-    keys = ["trade_id", "action", "entry_price", "take_profit", "stop_loss", "trade_type"]
-    return [dict(zip(keys, trade)) for trade in trades]
+    
+    # ⚠️ تعديل المفاتيح لتتناسب مع الاستعلام الجديد (5 أعمدة فقط)
+    keys = ["trade_id", "action", "entry_price", "take_profit", "stop_loss"]
+    
+    # إضافة trade_type يدوياً للبيانات لكي يعمل باقي الكود بشكل سليم
+    trades_list = []
+    for trade in trades:
+        trade_dict = dict(zip(keys, trade))
+        trade_dict['trade_type'] = 'SCALPING' # قيمة افتراضية للتشغيل
+        trades_list.append(trade_dict)
+        
+    return trades_list
 
 def update_trade_status(trade_id, exit_status, close_price):
     conn = get_db_connection()
@@ -556,7 +567,11 @@ class AccessMiddleware(BaseMiddleware):
             
         allowed_for_all = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك", "💰 خطة الأسعار VIP", "📈 سعر السوق الحالي", "🔍 الصفقات النشطة"]
         
-        if isinstance(event, types.Message) and event.text in allowed_for_all:
+        # ⚠️ إضافة الزر الجديد هنا أيضاً لمنعه من المستخدمين غير الـ VIP في حال عدم وجود AccessMiddleware
+        if isinstance(event, types.Message) and event.text in allowed_for_all + ["تحليل فوري دقيق (VIP) 🔍"]:
+             if event.text == "تحليل فوري دقيق (VIP) 🔍" and not is_user_vip(user_id):
+                 await event.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط.")
+                 return
              return await handler(event, data) 
 
         if not is_user_vip(user_id):
@@ -896,8 +911,9 @@ async def send_vip_trade_signal():
 def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="📝 حالة الاشتراك")],
-            [KeyboardButton(text="🔗 تفعيل مفتاح الاشتراك"), KeyboardButton(text="🔍 الصفقات النشطة")], 
+            # ⚠️ إضافة الزر الجديد هنا
+            [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="تحليل فوري دقيق (VIP) 🔍")],
+            [KeyboardButton(text="🔗 تفعيل مفتاح الاشتراك"), KeyboardButton(text="📝 حالة الاشتراك")],
             [KeyboardButton(text="💰 خطة الأسعار VIP"), KeyboardButton(text="💬 تواصل مع الدعم")],
             [KeyboardButton(text="ℹ️ عن AlphaTradeAI")]
         ],
@@ -1032,17 +1048,16 @@ async def admin_panel(msg: types.Message):
     await msg.reply("🎛️ مرحباً بك في لوحة تحكم الأدمن!", reply_markup=admin_menu())
 
 # ----------------------------------------------------------------------------------
-# دالة تحليل فوري ⚡️ 
+# دالة تحليل فوري ⚡️ (الزر القديم للأدمن) - هدفها اختبار الإرسال التلقائي (98%+)
 # ----------------------------------------------------------------------------------
 @dp.message(F.text == "تحليل فوري ⚡️")
 async def analyze_market_now(msg: types.Message):
-    if msg.from_user.id != ADMIN_ID and not is_user_vip(msg.from_user.id): 
-        await msg.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط.")
+    if msg.from_user.id != ADMIN_ID: 
+        await msg.answer("🚫 هذه الميزة مخصصة للأدمن فقط.")
         return
     
-    await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية...")
+    await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية (98%+)...")
     
-    # ⚠️ استرجاع كافة القيم من الدالة، حتى تلك غير المستخدمة هنا مباشرة
     price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL)
     confidence_percent = confidence * 100
     threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
@@ -1071,8 +1086,64 @@ async def analyze_market_now(msg: types.Message):
 # ----------------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------------
-# دالة تحليل خاص (VIP) 👤 
+# دالة تحليل فوري دقيق (VIP) 🔍 (الزر الجديد) - الثقة المطلوبة 90%
 # ----------------------------------------------------------------------------------
+@dp.message(F.text == "تحليل فوري دقيق (VIP) 🔍")
+async def analyze_market_now_precise(msg: types.Message):
+    # تم وضع التحقق من VIP في AccessMiddleware، هذا للاحتياط
+    if not is_user_vip(msg.from_user.id) and msg.from_user.id != ADMIN_ID: 
+        await msg.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط.")
+        return
+
+    await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول تتجاوز 90% ثقة...")
+    
+    price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL)
+    
+    # ⚠️ تحديد الثقة المطلوبة لزر التحليل الفوري العادي (90% = 0.9)
+    REQUIRED_CONFIDENCE = 0.90 
+    
+    confidence_percent = confidence * 100
+    threshold_percent = int(REQUIRED_CONFIDENCE * 100)
+    
+    if confidence == 0.0 and sl == 0.0 and ("لا تتوفر" in price_info_msg or "عرضي" in price_info_msg or "هادئ" in price_info_msg):
+        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}", parse_mode="HTML")
+        return
+        
+    if action == "HOLD" or confidence < REQUIRED_CONFIDENCE:
+         status_msg = f"""
+💡 **تقرير التحليل الفوري - XAUUSD**
+━━━━━━━━━━━━━━━
+🔎 **الإشارة الحالية:** {action}
+🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
+❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' else 'الثقة غير كافية للدخول في هذا الوضع')}
+━━━━━━━━━━━━━━━
+{price_info_msg}
+"""
+         await msg.answer(status_msg, parse_mode="HTML")
+    
+    # إذا كانت الثقة كافية (90% أو أعلى) - عرض الصفقة كاملة
+    elif confidence >= REQUIRED_CONFIDENCE:
+         rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
+         trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
+        
+         trade_msg = f"""
+✅ **إشارة جاهزة (ثقة {confidence_percent:.2f}%)**
+🚨 TRADE TYPE: **{trade_type_msg}** 🚨
+{('🟢' if action == 'BUY' else '🔴')} <b>ALPHA TRADE SIGNAL (90%+)</b> {('🟢' if action == 'BUY' else '🔴')}
+━━━━━━━━━━━━━━━
+📈 **PAIR:** XAUUSD 
+🔥 **ACTION:** {action}
+💰 **ENTRY:** ${entry:,.2f}
+🎯 **TAKE PROFIT (TP):** ${tp:,.2f}
+🛑 **STOP LOSS (SL):** ${sl:,.2f}
+⚖️ **RISK/REWARD:** 1:{rr_factor_used:.1f} (SL/TP)
+━━━━━━━━━━━━━━━
+**📊 ملاحظة:** هذه الإشارة لا ترسل تلقائياً، هي للتنفيذ اليدوي الآن.
+"""
+         await msg.answer(trade_msg, parse_mode="HTML")
+# ----------------------------------------------------------------------------------
+
+
 @dp.message(F.text == "تحليل خاص (VIP) 👤")
 async def analyze_private_pair(msg: types.Message):
     global SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR 
@@ -1167,7 +1238,8 @@ async def show_active_trades(msg: types.Message):
         entry = trade['entry_price']
         tp = trade['take_profit']
         sl = trade['stop_loss']
-        trade_type = trade['trade_type']
+        # trade_type تم افتراضها كـ 'SCALPING'
+        trade_type = trade.get('trade_type', 'SCALPING') 
         
         signal_emoji = "🟢" if action == "BUY" else "🔴"
         
@@ -1438,7 +1510,8 @@ async def check_open_trades():
         action = trade['action']
         tp = trade['take_profit']
         sl = trade['stop_loss']
-        trade_type = trade['trade_type']
+        # ⚠️ استخدام القيمة الافتراضية
+        trade_type = trade.get('trade_type', 'SCALPING') 
         
         exit_status = None
         close_price = None
