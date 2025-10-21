@@ -76,7 +76,7 @@ bot = Bot(token=BOT_TOKEN,
           
 dp = Dispatcher(storage=MemoryStorage())
 
-# =============== قاعدة بيانات PostgreSQL (بدون تغيير) ===============
+# =============== قاعدة بيانات PostgreSQL (مع التعديل الحاسم على init_db) ===============
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("🚫 لم يتم العثور على DATABASE_URL. يرجى التأكد من ربط PostgreSQL بـ Railway.")
@@ -121,18 +121,21 @@ def init_db():
     """)
     conn.commit()
     
-    # 2. **التعامل مع جداول المستخدمين القديمة (Migration Fix)**
-    # محاولة إضافة عمود 'trade_type' لجدول 'trades' في حالة وجوده وعدم وجود العمود
+    # 2. **التعامل مع جداول المستخدمين القديمة (Migration Fix القوي لـ Railway)**
     try:
-        cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='trades' and column_name='trade_type'")
-        if cursor.fetchone() is None:
-            print("⚠️ اكتشاف جدول 'trades' قديم. جارٍ إضافة عمود 'trade_type'...")
-            cursor.execute("ALTER TABLE trades ADD COLUMN trade_type VARCHAR(50) DEFAULT 'SCALPING'")
-            conn.commit()
-            print("✅ تم تحديث جدول 'trades' بنجاح.")
+        print("⚠️ محاولة إضافة عمود 'trade_type' لجدول 'trades' (لتصحيح الأخطاء السابقة)...")
+        # تنفيذ الأمر مباشرة
+        cursor.execute("ALTER TABLE trades ADD COLUMN trade_type VARCHAR(50) DEFAULT 'SCALPING'")
+        conn.commit()
+        print("✅ تم تحديث جدول 'trades' بنجاح. تم إضافة العمود.")
+    except psycopg2.errors.DuplicateColumn:
+        # هذا الاستثناء يعني أن العمود موجود بالفعل، وهذا أمر جيد
+        print("✅ العمود 'trade_type' موجود بالفعل. تم تخطي التحديث.")
+        conn.rollback() 
     except Exception as e:
-        # إذا لم يكن الجدول موجوداً أساساً، سيعالجه CREATE TABLE IF NOT EXISTS في الخطوة السابقة
-        print(f"⚠️ فشل تحديث جدول 'trades' (قد يكون بسبب عدم وجوده). {e}")
+        # أي خطأ آخر، فقط للتسجيل
+        print(f"⚠️ فشل تحديث جدول 'trades' لسبب غير متوقع. {e}")
+        conn.rollback()
         
     # 3. إعداد رأس مال الأدمن الافتراضي
     cursor.execute("SELECT value_float FROM admin_performance WHERE record_type = 'CAPITAL' ORDER BY timestamp DESC LIMIT 1")
@@ -801,7 +804,7 @@ def get_signal_and_confidence(symbol: str) -> tuple[str, float, str, float, floa
 - **SMA 200 (5m):** {latest_sma_200_5m:,.2f}
 - **الاتجاهات (5m/15m/30m/1h):** {htf_trend_5m[0]}/{htf_trend_15m[0]}/{htf_trend_30m[0]}/{htf_trend_1h[0]}
 """
-            return price_info_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance, trade_type
+            return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance, trade_type
         
         # ❌ رسالة الرفض النهائي (عندما تكون HOLD)
         else:
@@ -889,7 +892,7 @@ async def send_vip_trade_signal():
 
 
 # =============== باقي الكود (تم تحديث بعض الدوال لدعم trade_type) ===============
-# (العديد من الدوال مثل القوائم، الاتصال، الإدارة، التحليل الفوري، إلخ... بدون تغيير)
+
 def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
