@@ -43,15 +43,18 @@ ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAUT/USDT")
 ADMIN_CAPITAL_DEFAULT = float(os.getenv("ADMIN_CAPITAL_DEFAULT", "100.0")) 
 ADMIN_RISK_PER_TRADE = float(os.getenv("ADMIN_RISK_PER_TRADE", "0.02")) 
 
-# ⚠️ المتغيرات العامة (معاملات تحديد نقاط الخروج والدخول - تم التحديث)
-SL_FACTOR = 1.8  # عامل وقف الخسارة (يضرب في ATR)
-SCALPING_RR_FACTOR = 2.5 # عامل R:R لصفقات الـ Scalping
-LONGTERM_RR_FACTOR = 3.5 # عامل R:R لصفقات الـ Long-Term
+# ⚠️ المتغير الجديد: الثقة المطلوبة للتحليل الفوري المحسن (85%)
+REQUIRED_MANUAL_CONFIDENCE = float(os.getenv("REQUIRED_MANUAL_CONFIDENCE", "0.85")) 
 
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.98")) # الثقة المطلوبة للإرسال التلقائي (98%)
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) 
 ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) 
 TRADE_ANALYSIS_INTERVAL = int(os.getenv("TRADE_ANALYSIS_INTERVAL", "60")) 
+
+# ⚠️ المتغيرات العامة (معاملات تحديد نقاط الخروج والدخول - تم التحديث)
+SL_FACTOR = 1.8  # عامل وقف الخسارة (يضرب في ATR)
+SCALPING_RR_FACTOR = 2.5 # عامل R:R لصفقات الـ Scalping
+LONGTERM_RR_FACTOR = 3.5 # عامل R:R لصفقات الـ Long-Term
 
 # فلاتر ADX الجديدة
 ADX_SCALPING_MIN = 25
@@ -290,7 +293,7 @@ def get_active_trades():
     if conn is None: return []
     cursor = conn.cursor()
     
-    # ⚠️ الحل الجذري والوحيد المتبقي: حذف trade_type من الاستعلام لتجنب UndefinedColumn
+    # ⚠️ الحل الجذري: حذف trade_type من الاستعلام لتجنب UndefinedColumn
     cursor.execute("""
         SELECT trade_id, action, entry_price, take_profit, stop_loss
         FROM trades 
@@ -567,9 +570,9 @@ class AccessMiddleware(BaseMiddleware):
             
         allowed_for_all = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك", "💰 خطة الأسعار VIP", "📈 سعر السوق الحالي", "🔍 الصفقات النشطة"]
         
-        # ⚠️ إضافة الزر الجديد هنا أيضاً لمنعه من المستخدمين غير الـ VIP في حال عدم وجود AccessMiddleware
-        if isinstance(event, types.Message) and event.text in allowed_for_all + ["تحليل فوري دقيق (VIP) 🔍"]:
-             if event.text == "تحليل فوري دقيق (VIP) 🔍" and not is_user_vip(user_id):
+        # ⚠️ الزر الجديد 85% يجب أن يُسمح به لـ VIP
+        if isinstance(event, types.Message) and event.text in allowed_for_all + ["تحليل فوري مُحسَّن (85%+) 🚀"]:
+             if event.text == "تحليل فوري مُحسَّن (85%+) 🚀" and not is_user_vip(user_id):
                  await event.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط.")
                  return
              return await handler(event, data) 
@@ -911,8 +914,8 @@ async def send_vip_trade_signal():
 def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            # ⚠️ إضافة الزر الجديد هنا
-            [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="تحليل فوري دقيق (VIP) 🔍")],
+            # ⚠️ تم استبدال الزر القديم بالزر الجديد (85%+)
+            [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="تحليل فوري مُحسَّن (85%+) 🚀")],
             [KeyboardButton(text="🔗 تفعيل مفتاح الاشتراك"), KeyboardButton(text="📝 حالة الاشتراك")],
             [KeyboardButton(text="💰 خطة الأسعار VIP"), KeyboardButton(text="💬 تواصل مع الدعم")],
             [KeyboardButton(text="ℹ️ عن AlphaTradeAI")]
@@ -933,6 +936,8 @@ def admin_menu():
         ],
         resize_keyboard=True
     )
+
+# ... (بقية دوال الأدمن: prompt_new_capital, process_new_capital, process_trade_pnl_after_entry, process_manual_trade_result, prompt_trade_result, show_weekly_report) تبقى كما هي ...
 
 @dp.message(F.text == "تعديل رأس المال 💵")
 async def prompt_new_capital(msg: types.Message, state: FSMContext):
@@ -981,7 +986,7 @@ async def process_trade_pnl_after_entry(msg: types.Message, state: FSMContext):
         await msg.reply("❌ إدخال غير صحيح للربح/الخسارة. يرجى إدخال قيمة عددية موجبة أو سالبة.", reply_markup=admin_menu())
     except Exception:
          await state.clear()
-         await msg.reply("❌ حدث خطأ غير متوقع أثناء تسجيل النتيجة. يرجى المحاولة يدوياً أو مراجعة اللوغ.", reply_markup=admin_menu())
+         await msg.reply("❌ حدث خطأ غير متوقع أثناء تسجيل النتيجة. يرجى مراجعة اللوغ.", reply_markup=admin_menu())
 
 @dp.message(AdminStates.waiting_trade_result_input)
 async def process_manual_trade_result(msg: types.Message, state: FSMContext):
@@ -1056,13 +1061,14 @@ async def analyze_market_now(msg: types.Message):
         await msg.answer("🚫 هذه الميزة مخصصة للأدمن فقط.")
         return
     
-    await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية (98%+)...")
+    # ⚠️ تستخدم CONFIDENCE_THRESHOLD (98%) لاختبار الإرسال التلقائي
+    await msg.reply(f"⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول ذات ثقة عالية ({int(CONFIDENCE_THRESHOLD*100)}%+)...")
     
     price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL)
     confidence_percent = confidence * 100
     threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
     
-    # ⚠️ التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
+    # التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
     if confidence == 0.0 and sl == 0.0 and ("لا تتوفر" in price_info_msg or "عرضي" in price_info_msg or "هادئ" in price_info_msg):
         await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}", parse_mode="HTML")
         return
@@ -1080,56 +1086,58 @@ async def analyze_market_now(msg: types.Message):
 """
          await msg.answer(status_msg, parse_mode="HTML")
     
-    # (2) إذا كانت الثقة كافية (98% أو أعلى) - تم تصحيح الرسالة هنا
+    # (2) إذا كانت الثقة كافية (98% أو أعلى) 
     elif confidence >= CONFIDENCE_THRESHOLD:
          await msg.answer(f"✅ تم إيجاد إشارة فائقة القوة ({action}) ({trade_type}) على XAUUSD!\nنسبة الثقة: <b>{confidence_percent:.2f}%</b> (أعلى من المطلوب {threshold_percent}%).\n**تم إرسال الإشارة التلقائية لـ VIP إذا لم تكن هناك صفقات نشطة.**", parse_mode="HTML")
 # ----------------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------------
-# دالة تحليل فوري دقيق (VIP) 🔍 (الزر الجديد) - الثقة المطلوبة 90%
+# دالة تحليل فوري مُحسَّن (85%+) 🚀 (الزر الجديد لـ VIP)
 # ----------------------------------------------------------------------------------
-@dp.message(F.text == "تحليل فوري دقيق (VIP) 🔍")
-async def analyze_market_now_precise(msg: types.Message):
-    # تم وضع التحقق من VIP في AccessMiddleware، هذا للاحتياط
+@dp.message(F.text == "تحليل فوري مُحسَّن (85%+) 🚀")
+async def analyze_market_now_enhanced(msg: types.Message):
+    global REQUIRED_MANUAL_CONFIDENCE
+    
+    # يجب أن يكون VIP أو الأدمن
     if not is_user_vip(msg.from_user.id) and msg.from_user.id != ADMIN_ID: 
         await msg.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط.")
         return
 
-    await msg.reply("⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول تتجاوز 90% ثقة...")
+    # ⚠️ تستخدم REQUIRED_MANUAL_CONFIDENCE (85%) لإظهار الصفقة الكاملة
+    await msg.reply(f"⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول تتجاوز {int(REQUIRED_MANUAL_CONFIDENCE*100)}% ثقة...")
     
     price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL)
     
-    # ⚠️ تحديد الثقة المطلوبة لزر التحليل الفوري العادي (90% = 0.9)
-    REQUIRED_CONFIDENCE = 0.90 
-    
     confidence_percent = confidence * 100
-    threshold_percent = int(REQUIRED_CONFIDENCE * 100)
+    threshold_percent = int(REQUIRED_MANUAL_CONFIDENCE * 100)
     
+    # التحقق من وجود مشكلة في البيانات (فشل التحليل)
     if confidence == 0.0 and sl == 0.0 and ("لا تتوفر" in price_info_msg or "عرضي" in price_info_msg or "هادئ" in price_info_msg):
         await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}", parse_mode="HTML")
         return
         
-    if action == "HOLD" or confidence < REQUIRED_CONFIDENCE:
+    # إذا كانت الثقة غير كافية (أقل من 85%)
+    if action == "HOLD" or confidence < REQUIRED_MANUAL_CONFIDENCE:
          status_msg = f"""
-💡 **تقرير التحليل الفوري - XAUUSD**
+💡 **تقرير التحليل الفوري المُحسَّن - XAUUSD**
 ━━━━━━━━━━━━━━━
 🔎 **الإشارة الحالية:** {action}
 🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
-❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' else 'الثقة غير كافية للدخول في هذا الوضع')}
+❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' else 'الثقة غير كافية للدخول')}
 ━━━━━━━━━━━━━━━
 {price_info_msg}
 """
          await msg.answer(status_msg, parse_mode="HTML")
     
-    # إذا كانت الثقة كافية (90% أو أعلى) - عرض الصفقة كاملة
-    elif confidence >= REQUIRED_CONFIDENCE:
+    # إذا كانت الثقة كافية (85% أو أعلى) - عرض الصفقة كاملة
+    elif confidence >= REQUIRED_MANUAL_CONFIDENCE:
          rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
          trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
         
          trade_msg = f"""
 ✅ **إشارة جاهزة (ثقة {confidence_percent:.2f}%)**
 🚨 TRADE TYPE: **{trade_type_msg}** 🚨
-{('🟢' if action == 'BUY' else '🔴')} <b>ALPHA TRADE SIGNAL (90%+)</b> {('🟢' if action == 'BUY' else '🔴')}
+{('🟢' if action == 'BUY' else '🔴')} <b>ALPHA TRADE SIGNAL (85%+)</b> {('🟢' if action == 'BUY' else '🔴')}
 ━━━━━━━━━━━━━━━
 📈 **PAIR:** XAUUSD 
 🔥 **ACTION:** {action}
@@ -1138,7 +1146,7 @@ async def analyze_market_now_precise(msg: types.Message):
 🛑 **STOP LOSS (SL):** ${sl:,.2f}
 ⚖️ **RISK/REWARD:** 1:{rr_factor_used:.1f} (SL/TP)
 ━━━━━━━━━━━━━━━
-**📊 ملاحظة:** هذه الإشارة لا ترسل تلقائياً، هي للتنفيذ اليدوي الآن.
+**📊 ملاحظة:** هذه الإشارة للتنفيذ اليدوي الآن.
 """
          await msg.answer(trade_msg, parse_mode="HTML")
 # ----------------------------------------------------------------------------------
@@ -1199,6 +1207,8 @@ async def analyze_private_pair(msg: types.Message):
     await msg.answer(private_msg, parse_mode="HTML")
     await msg.answer("❓ **هل دخلت هذه الصفقة؟** (استخدم 'تسجيل نتيجة صفقة 📝' لتسجيل النتيجة يدوياً)", parse_mode="HTML")
 # ----------------------------------------------------------------------------------
+
+# ... (بقية دوال المستخدم والأدمن) تبقى كما هي
 
 @dp.message(F.text == "📊 جرد الصفقات اليومي")
 async def daily_inventory_report(msg: types.Message):
@@ -1319,6 +1329,8 @@ async def contact_support(msg: types.Message):
 @dp.message(F.text == "ℹ️ عن AlphaTradeAI")
 async def about_bot(msg: types.Message):
     threshold_percent = int(CONFIDENCE_THRESHOLD * 100)
+    manual_threshold_percent = int(REQUIRED_MANUAL_CONFIDENCE * 100)
+
     about_msg = f"""
 🚀 <b>AlphaTradeAI: ثورة التحليل الكمّي في تداول الذهب!</b> 🚀
 
@@ -1334,8 +1346,9 @@ async def about_bot(msg: types.Message):
 2.  <b>إشارات سداسية التأكيد (6-Tier Confirmation):</b>
     كل صفقة تُرسل يجب أن تمر بـ 7 فلاتر تحليلية (EMA, RSI, ADX, BB, SMA 200, توافق الأطر الزمنية).
 
-3.  <b>أعلى درجات الثقة:</b>
-    لا يتم إرسال أي صفقة إلا إذا تجاوزت نسبة الثقة **{threshold_percent}%** (حالياً يتم الإرسال عند {threshold_percent}% أو أعلى)، وهذا يضمن جودة إشارة استثنائية.
+3.  <b>عتبات الثقة:</b>
+    * **الإرسال التلقائي:** لا يتم إرسال أي صفقة تلقائيًا إلا إذا تجاوزت الثقة **{threshold_percent}%**.
+    * **التحليل المُحسَّن (يدوي):** يمكن طلب صفقة كاملة إذا تجاوزت الثقة **{manual_threshold_percent}%**.
 
 4.  <b>نقاط خروج ديناميكية:</b>
     نقاط TP و SL تتغير مع كل صفقة بناءً على التقلب الفعلي للسوق (ATR)، مما يضمن تحديد هدف ووقف مناسبين لظروف السوق الحالية.
