@@ -20,9 +20,10 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
 
-# =============== تعريف حالات FSM المُعدَّلة ===============
+# =============== تعريف حالات FSM المُعدَّلة والمُضافة ===============
 class AdminStates(StatesGroup):
-    waiting_broadcast = State()
+    waiting_broadcast_target = State() # 👈 الحالة الجديدة لتحديد الجمهور
+    waiting_broadcast_text = State()   # 👈 الحالة الجديدة لكتابة نص الرسالة
     waiting_trade = State()
     waiting_ban = State()
     waiting_unban = State()
@@ -34,7 +35,7 @@ class AdminStates(StatesGroup):
 class UserStates(StatesGroup):
     waiting_key_activation = State() 
     
-# =============== إعداد البوت والمتغيرات (تم تحديث الجدولة) ===============
+# =============== إعداد البوت والمتغيرات (تم تحديث شروط 85%) ===============
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID_STR = os.getenv("ADMIN_ID", "0") 
 TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAUT/USDT") 
@@ -54,19 +55,19 @@ TRADE_ANALYSIS_INTERVAL_98 = 10 * 60                                           #
 TRADE_ANALYSIS_INTERVAL_85 = 15 * 60                                           # 15 دقيقة
 ACTIVITY_ALERT_INTERVAL = 3 * 3600                                             # 3 ساعات للرسائل الدورية
 
-# المتغيرات العامة (معاملات تحديد نقاط الخروج والدخول - تم التحديث)
+# المتغيرات العامة (معاملات تحديد نقاط الخروج والدخول)
 SL_FACTOR = 1.8  
 SCALPING_RR_FACTOR = 2.5 
 LONGTERM_RR_FACTOR = 3.5 
 
-# فلاتر ADX الجديدة
-ADX_SCALPING_MIN = 25
-ADX_LONGTERM_MIN = 20
+# ⚠️ فلاتر ADX الجديدة (تم التخفيف)
+ADX_SCALPING_MIN = 22 # 👈 تم التخفيف إلى 22
+ADX_LONGTERM_MIN = 18 # 👈 تم التخفيف إلى 18
 BB_PROXIMITY_THRESHOLD = 0.5 
 
-# ⚠️ الحد الأدنى لعدد الفلاتر المارة
+# ⚠️ الحد الأدنى لعدد الفلاتر المارة (تم تخفيف الـ 85%)
 MIN_FILTERS_FOR_98 = 7 # نطلب كل الفلاتر
-MIN_FILTERS_FOR_85 = 4 # نطلب 4 فلاتر أساسية
+MIN_FILTERS_FOR_85 = 3 # 👈 تم التخفيف إلى 3 فلاتر أساسية
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 
@@ -86,7 +87,9 @@ bot = Bot(token=BOT_TOKEN,
           
 dp = Dispatcher(storage=MemoryStorage())
 
-# =============== قاعدة بيانات PostgreSQL (مع تحديث لجدول الإرسالات) ===============
+# =============== قاعدة بيانات PostgreSQL (نفس الكود) ===============
+# ... (DATABASE_URL, get_db_connection, init_db, log_auto_trade_sent, get_last_auto_trades, get_all_users_ids, is_user_vip, وغيرها من دوال CRUD) ...
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("🚫 لم يتم العثور على DATABASE_URL. يرجى التأكد من ربط PostgreSQL بـ Railway.")
@@ -124,7 +127,7 @@ def init_db():
             trade_symbol VARCHAR(50) NULL,
             lots_used DOUBLE PRECISION NULL
         );
-        -- ⚠️ الجدول الجديد لتسجيل الصفقات التلقائية (لزر تقرير الإرسال)
+        -- الجدول الجديد لتسجيل الصفقات التلقائية
         CREATE TABLE IF NOT EXISTS auto_trades_log (
             id SERIAL PRIMARY KEY,
             trade_id TEXT NOT NULL,
@@ -136,7 +139,7 @@ def init_db():
     """)
     conn.commit()
     
-    # 2. Migration Fix
+    # 2. Migration Fix (لإضافة العمود في حال عدم وجوده)
     try:
         cursor.execute("ALTER TABLE trades ADD COLUMN trade_type VARCHAR(50) DEFAULT 'SCALPING'")
         conn.commit()
@@ -184,8 +187,6 @@ def get_last_auto_trades(limit: int = 5):
     conn.close()
     return trades
 
-# دوال CRUD أساسية (نفس الكود)
-# ... (add_user, is_banned, update_ban_status, get_all_users_ids, get_total_users) ...
 def add_user(user_id, username):
     conn = get_db_connection()
     if conn is None: return
@@ -235,8 +236,7 @@ def get_total_users():
     result = cursor.fetchone()[0]
     conn.close()
     return result
-# دوال الاشتراكات (نفس الكود)
-# ... (is_user_vip, activate_key, get_user_vip_status, create_invite_key) ...
+
 def is_user_vip(user_id):
     conn = get_db_connection()
     if conn is None: return False
@@ -304,8 +304,7 @@ def create_invite_key(admin_id, days):
     conn.commit()
     conn.close()
     return key
-# === دوال إدارة الصفقات (نفس الكود)
-# ... (save_new_trade, get_active_trades, update_trade_status, get_daily_trade_report) ...
+    
 def save_new_trade(action, entry, tp, sl, user_count, trade_type):
     conn = get_db_connection()
     if conn is None: return None
@@ -396,8 +395,6 @@ def get_daily_trade_report():
 
     return report_msg
 
-# دوال إدارة الأداء الشخصي (نفس الكود)
-# ... (get_admin_financial_status, update_admin_capital, save_admin_trade_result, get_admin_trades_in_period, generate_weekly_performance_report, calculate_lot_size_for_admin) ...
 def get_admin_financial_status():
     conn = get_db_connection()
     if conn is None: return ADMIN_CAPITAL_DEFAULT
@@ -506,8 +503,6 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
     
     return lot_size, asset_info
 
-# === دوال جلب البيانات الفورية (نفس الكود) ===
-# ... (fetch_ohlcv_data, fetch_current_price_ccxt) ...
 def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
     try:
         api_key = os.getenv("BYBIT_API_KEY", "")
@@ -592,11 +587,13 @@ class AccessMiddleware(BaseMiddleware):
             
         allowed_for_all = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك", "💰 خطة الأسعار VIP", "📈 سعر السوق الحالي", "🔍 الصفقات النشطة"]
         
-        if isinstance(event, types.Message) and event.text in allowed_for_all + ["تحليل فوري مُحسَّن (85%+) 🚀"]:
-             if event.text == "تحليل فوري مُحسَّن (85%+) 🚀" and not is_user_vip(user_id):
-                 await event.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط.")
-                 return
+        if isinstance(event, types.Message) and event.text in allowed_for_all:
              return await handler(event, data) 
+
+        # ⚠️ زر 85%+ أصبح متاح للأدمن فقط، وهنا نمنع المستخدم العادي من الوصول إليه حتى لو ظهر له بطريقة ما
+        if isinstance(event, types.Message) and event.text == "تحليل فوري مُحسَّن (85%+) 🚀":
+             await event.answer("⚠️ هذه الميزة مخصصة للأدمن فقط.")
+             return
 
         if not is_user_vip(user_id):
             if isinstance(event, types.Message) and event.text not in allowed_for_all:
@@ -605,10 +602,9 @@ class AccessMiddleware(BaseMiddleware):
 
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل (تم التعديل لدعم منطق الفلترة المزدوج) ===============
+# =============== وظائف التداول والتحليل (تم تحديث منطق 85%) ===============
 
 def calculate_adx(df, window=14):
-    # ... (نفس كود حساب ADX)
     """حساب مؤشر ADX, +DI, و -DI."""
     # True Range (TR)
     df['tr'] = pd.concat([df['High'] - df['Low'], (df['High'] - df['Close'].shift()).abs(), (df['Low'] - df['Close'].shift()).abs()], axis=1).max(axis=1)
@@ -623,7 +619,7 @@ def calculate_adx(df, window=14):
         return series.ewm(com=periods - 1, adjust=False).mean()
         
     df['+DMS'] = smooth(df['+DM'], window)
-    df['-DMS'] = smooth(df['-DM'], window) # Fix: used +DM twice in original, corrected to -DM here
+    df['-DMS'] = smooth(df['-DM'], window) 
     df['TRS'] = smooth(df['tr'], window)
     
     # Directional Indicators (DI)
@@ -645,7 +641,7 @@ def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[st
     REQUIRED_FILTERS = MIN_FILTERS_FOR_98 if target_confidence == CONFIDENCE_THRESHOLD_98 else MIN_FILTERS_FOR_85
     
     try:
-        # جلب البيانات لجميع الأطر الزمنية المطلوبة (نفس الكود)
+        # جلب البيانات لجميع الأطر الزمنية المطلوبة
         data_1m = fetch_ohlcv_data(symbol, "1m", limit=200)
         data_5m = fetch_ohlcv_data(symbol, "5m", limit=200)
         data_15m = fetch_ohlcv_data(symbol, "15m", limit=200)
@@ -744,7 +740,7 @@ def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[st
             # فلتر 1: EMA Crossover 15m
             passed_filters_lt += 1
             
-            # فلتر 2: الاتجاه قوي على 15m (ADX)
+            # فلتر 2: الاتجاه قوي على 15m (ADX) - تم التخفيف في المتغيرات
             if current_adx_15m >= ADX_LONGTERM_MIN:
                 passed_filters_lt += 1
                 
@@ -775,7 +771,6 @@ def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[st
         if action_lt != "HOLD":
             action = action_lt
             trade_type = "LONG_TERM"
-            # الثقة تعتمد على الثقة المطلوبة (98% أو 85%)
             confidence = target_confidence 
             rr_factor = LONGTERM_RR_FACTOR
         
@@ -802,7 +797,7 @@ def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[st
                 # فلتر 1: EMA Crossover 1m
                 passed_filters_sc += 1
                 
-                # فلتر 2: الاتجاه قوي على 5m (ADX)
+                # فلتر 2: الاتجاه قوي على 5m (ADX) - تم التخفيف في المتغيرات
                 if current_adx_5m >= ADX_SCALPING_MIN:
                     passed_filters_sc += 1
                     
@@ -819,14 +814,20 @@ def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[st
                 # فلتر 5 (إضافي للـ 98%): البولينجر باند (قرب القاع/القمة)
                 bb_ok_buy = (entry_price - latest_bb_lower_5m) < BB_PROXIMITY_THRESHOLD and entry_price > latest_bb_lower_5m
                 bb_ok_sell = (latest_bb_upper_5m - entry_price) < BB_PROXIMITY_THRESHOLD and entry_price < latest_bb_upper_5m
-                if (bb_ok_buy and is_buy_signal_1m) or (bb_ok_sell and is_sell_signal_1m):
-                    passed_filters_sc += 1
+                
+                # ⚠️ تخفيف: لا نطلب هذا الفلتر لـ 85%
+                if target_confidence == CONFIDENCE_THRESHOLD_98:
+                    if (bb_ok_buy and is_buy_signal_1m) or (bb_ok_sell and is_sell_signal_1m):
+                        passed_filters_sc += 1
 
                 # فلتر 6 (إضافي للـ 98%): SMA 200 (5m)
                 sma_ok_buy = entry_price > latest_sma_200_5m
                 sma_ok_sell = entry_price < latest_sma_200_5m
-                if (sma_ok_buy and is_buy_signal_1m) or (sma_ok_sell and is_sell_signal_1m):
-                    passed_filters_sc += 1
+                
+                # ⚠️ تخفيف: لا نطلب هذا الفلتر لـ 85%
+                if target_confidence == CONFIDENCE_THRESHOLD_98:
+                    if (sma_ok_buy and is_buy_signal_1m) or (sma_ok_sell and is_sell_signal_1m):
+                        passed_filters_sc += 1
                     
                 # فلتر 7 (إضافي للـ 98%): توافق 5m (الاتجاه الفعلي)
                 if (htf_trend_5m == "BULLISH" and is_buy_signal_1m) or (htf_trend_5m == "BEARISH" and is_sell_signal_1m):
@@ -839,7 +840,6 @@ def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[st
             if action_sc != "HOLD":
                 action = action_sc
                 trade_type = "SCALPING"
-                # الثقة تعتمد على الثقة المطلوبة (98% أو 85%)
                 confidence = target_confidence 
                 rr_factor = SCALPING_RR_FACTOR
             else:
@@ -877,7 +877,6 @@ def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[st
 """
             return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance, trade_type
         
-        # ❌ رسالة الرفض النهائي (عندما تكون HOLD)
         else:
             price_msg = f"""
 📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {price_source})
@@ -896,13 +895,11 @@ def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[st
         return f"❌ فشل في جلب بيانات التداول لـ XAUUSD أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
 
 
-# === دالة الإرسال التلقائي الجديدة (تم التحديث لدعم النوع المزدوج والمراقبة) ===
 async def send_auto_trade_signal(confidence_target: float):
     
     threshold = confidence_target
     threshold_percent = int(threshold * 100)
     
-    # 1. تحقق من عدم وجود صفقات نشطة بالفعل
     active_trades = get_active_trades()
     if len(active_trades) > 0:
         print(f"🔎 بدأ البحث التلقائي عن صفقات {threshold_percent}%: يوجد {len(active_trades)} صفقات نشطة. تم تخطي التحليل.")
@@ -910,7 +907,6 @@ async def send_auto_trade_signal(confidence_target: float):
 
     print(f"🔎 بدأ البحث التلقائي عن صفقات {threshold_percent}%...")
     
-    # 2. إجراء التحليل المزدوج
     try:
         price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL, confidence_target)
     except Exception as e:
@@ -920,9 +916,8 @@ async def send_auto_trade_signal(confidence_target: float):
     confidence_percent = confidence * 100
     DISPLAY_SYMBOL = "XAUUSD" 
     
-    rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
+    rr_factor_used = SCALALING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
 
-    # 3. تحقق من شرط الثقة
     if action != "HOLD" and confidence >= threshold:
         
         print(f"✅ إشارة {action} قوية جداً تم العثور عليها ({trade_type}) (الثقة: {confidence_percent:.2f}%). جارٍ الإرسال...")
@@ -943,12 +938,11 @@ async def send_auto_trade_signal(confidence_target: float):
 ━━━━━━━━━━━━━━━
 ⚠️ نفذ الصفقة **فوراً** على سعر السوق.
 """
-        # 4. حفظ الصفقة وإرسالها
         all_users = get_all_users_ids()
         vip_users = [uid for uid, is_banned in all_users if is_banned == 0 and is_user_vip(uid)]
         
         trade_id = save_new_trade(action, entry, tp, sl, len(vip_users), trade_type)
-        log_auto_trade_sent(trade_id, confidence, action, trade_type) # ⚠️ سجل الإرسال التلقائي
+        log_auto_trade_sent(trade_id, confidence, action, trade_type) 
 
         if trade_id:
             for uid in vip_users:
@@ -957,7 +951,6 @@ async def send_auto_trade_signal(confidence_target: float):
                 except Exception:
                     pass
             
-            # ⚠️ رسالة التأكيد الفورية للأدمن (الميزة رقم 1)
             admin_confirmation_msg = f"✅ تم إرسال صفقة تلقائية ({threshold_percent}%) لـ {DISPLAY_SYMBOL}: {action} عند ${entry:,.2f}. تم الإرسال إلى {len(vip_users)} مستخدم VIP. ID: {trade_id}"
             if ADMIN_ID != 0:
                  await bot.send_message(ADMIN_ID, admin_confirmation_msg)
@@ -967,10 +960,6 @@ async def send_auto_trade_signal(confidence_target: float):
     else:
          print(f"❌ لا توجد إشارة واضحة {threshold_percent}% (HOLD).")
 
-
-# ===============================================
-# === رسائل النشاط الدوري (الميزة الجديدة رقم 3 - الجزء الثاني) ===
-# ===============================================
 
 POSITIVE_HEADINGS = [
     "🚀 تحليلاتنا تعمل باستمرار!",
@@ -998,7 +987,6 @@ RESULT_PHRASES = [
 
 async def send_periodic_activity_message():
     
-    # 1. إنشاء الرسالة العشوائية
     heading = random.choice(POSITIVE_HEADINGS)
     action = random.choice(ACTION_PHRASES)
     result = random.choice(RESULT_PHRASES)
@@ -1011,7 +999,6 @@ async def send_periodic_activity_message():
 ✅ **الحالة الحالية:** لا تزال الإشارات التلقائية لـ 98% و 85% نشطة.
 """
     
-    # 2. إرسالها لجميع المشتركين VIP
     all_users = get_all_users_ids()
     vip_users = [uid for uid, is_banned in all_users if is_banned == 0 and is_user_vip(uid)]
     
@@ -1023,12 +1010,25 @@ async def send_periodic_activity_message():
         except Exception:
             pass
 
-# =============== القوائم والأزرار (تم تحديث قائمة الأدمن) ===============
+# =============== القوائم والأزرار (تم تحديث قائمة الأدمن والمستخدم) ===============
+
+# ⚠️ لوحة مفاتيح اختيار جمهور البث الجديدة
+def broadcast_target_keyboard():
+    keyboard = [
+        [
+            InlineKeyboardButton(text="✅ لجميع المستخدمين", callback_data="broadcast_target_all"),
+            InlineKeyboardButton(text="🌟 للـ VIP فقط", callback_data="broadcast_target_vip")
+        ],
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="broadcast_cancel")]
+    ]
+    return InlineKeyboardMarkup(keyboard=keyboard)
+
 
 def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="تحليل فوري مُحسَّن (85%+) 🚀")],
+            # ⚠️ تم حذف زر 85%+ من هنا (نقله إلى قائمة الأدمن)
+            [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="🔍 الصفقات النشطة")],
             [KeyboardButton(text="🔗 تفعيل مفتاح الاشتراك"), KeyboardButton(text="📝 حالة الاشتراك")],
             [KeyboardButton(text="💰 خطة الأسعار VIP"), KeyboardButton(text="💬 تواصل مع الدعم")],
             [KeyboardButton(text="ℹ️ عن AlphaTradeAI")]
@@ -1039,21 +1039,20 @@ def user_menu():
 def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            # ⚠️ زر التقرير الجديد (الميزة رقم 3 - الجزء الأول)
-            [KeyboardButton(text="تحليل خاص (VIP) 👤"), KeyboardButton(text="تقرير الإرسال الأسبوعي 📊")],
+            # ⚠️ تم إضافة زر 85%+ إلى قائمة الأدمن هنا
+            [KeyboardButton(text="تحليل فوري مُحسَّن (85%+) 🚀"), KeyboardButton(text="تقرير الإرسال الأسبوعي 📊")],
             [KeyboardButton(text="آخر 5 إرسالات تلقائية 🕒"), KeyboardButton(text="📊 جرد الصفقات اليومي")],
             [KeyboardButton(text="تسجيل نتيجة صفقة 📝"), KeyboardButton(text="تعديل رأس المال 💵")],
             [KeyboardButton(text="تحليل فوري ⚡️"), KeyboardButton(text="👥 عدد المستخدمين")],
-            [KeyboardButton(text="📢 رسالة لكل المستخدمين"), KeyboardButton(text="🔑 إنشاء مفتاح اشتراك")],
+            # ⚠️ زر الإرسال الجماعي المُعدَّل
+            [KeyboardButton(text="📢 رسالة لكل المستخدمين"), KeyboardButton(text="🔑 إنشاء مفتاح اشتراك")], 
             [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء حظر مستخدم")],
             [KeyboardButton(text="🔙 عودة للمستخدم")]
         ],
         resize_keyboard=True
     )
 
-# ... (بقية دوال الأدمن: prompt_new_capital, process_new_capital, process_trade_pnl_after_entry, process_manual_trade_result, prompt_trade_result) تبقى كما هي ...
-
-# دوال الأدمن
+# ... (بقية دوال الأدمن: prompt_new_capital, process_new_capital, process_trade_pnl_after_entry, process_manual_trade_result, prompt_trade_result) ...
 @dp.message(F.text == "تعديل رأس المال 💵")
 async def prompt_new_capital(msg: types.Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
@@ -1150,7 +1149,6 @@ async def show_weekly_report(msg: types.Message):
     report = generate_weekly_performance_report()
     await msg.reply(report, parse_mode="HTML")
 
-# ⚠️ زر تقرير الإرسال التلقائي الجديد (الميزة رقم 3 - الجزء الأول)
 @dp.message(F.text == "آخر 5 إرسالات تلقائية 🕒")
 async def show_last_auto_sends(msg: types.Message):
     if msg.from_user.id != ADMIN_ID: return
@@ -1191,7 +1189,7 @@ async def admin_panel(msg: types.Message):
     await msg.reply("🎛️ مرحباً بك في لوحة تحكم الأدمن!", reply_markup=admin_menu())
 
 # ----------------------------------------------------------------------------------
-# دالة تحليل فوري ⚡️ (تم تغييرها لـ "تقرير وضع السوق فقط")
+# دالة تحليل فوري ⚡️ (لتقارير الأدمن - تستخدم 98%)
 # ----------------------------------------------------------------------------------
 @dp.message(F.text == "تحليل فوري ⚡️")
 async def analyze_market_now(msg: types.Message):
@@ -1199,13 +1197,11 @@ async def analyze_market_now(msg: types.Message):
         await msg.answer("🚫 هذه الميزة مخصصة للأدمن فقط.")
         return
     
-    # ⚠️ نستخدم 98% لعرض التقرير الأكثر تفصيلاً
     await msg.reply(f"⏳ جارٍ تحليل وضع السوق (باستخدام فلاتر 98%)...")
     
     price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL, CONFIDENCE_THRESHOLD_98)
     confidence_percent = confidence * 100
     
-    # (1) إذا لم تتوفر إشارة أساساً
     if action == "HOLD" or confidence < 0.01:
          status_msg = f"""
 💡 **تقرير وضع السوق الحالي - XAUUSD**
@@ -1218,7 +1214,6 @@ async def analyze_market_now(msg: types.Message):
 """
          await msg.answer(status_msg, parse_mode="HTML")
     
-    # (2) إذا تم إيجاد إشارة (للتوضيح فقط)
     else:
         status_msg = f"""
 💡 **تقرير وضع السوق الحالي - XAUUSD**
@@ -1232,19 +1227,19 @@ async def analyze_market_now(msg: types.Message):
         await msg.answer(status_msg, parse_mode="HTML")
 
 # ----------------------------------------------------------------------------------
-# دالة تحليل فوري مُحسَّن (85%+) 🚀 (زر VIP اليدوي) - لا تغيير
+# ⚠️ دالة تحليل فوري مُحسَّن (85%+) 🚀 (زر الأدمن للتنفيذ اليدوي)
 # ----------------------------------------------------------------------------------
 @dp.message(F.text == "تحليل فوري مُحسَّن (85%+) 🚀")
-async def analyze_market_now_enhanced(msg: types.Message):
+async def analyze_market_now_enhanced_admin(msg: types.Message):
     global REQUIRED_MANUAL_CONFIDENCE
     
-    if not is_user_vip(msg.from_user.id) and msg.from_user.id != ADMIN_ID: 
-        await msg.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط.")
+    if msg.from_user.id != ADMIN_ID: 
+        await msg.answer("🚫 هذه الميزة مخصصة للأدمن فقط.")
         return
 
-    # ⚠️ تستخدم REQUIRED_MANUAL_CONFIDENCE (85%) لإظهار الصفقة الكاملة
     await msg.reply(f"⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول تتجاوز {int(REQUIRED_MANUAL_CONFIDENCE*100)}% ثقة...")
     
+    # تستخدم REQUIRED_MANUAL_CONFIDENCE (85%)
     price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL, REQUIRED_MANUAL_CONFIDENCE)
     
     confidence_percent = confidence * 100
@@ -1285,10 +1280,9 @@ async def analyze_market_now_enhanced(msg: types.Message):
 **📊 ملاحظة:** هذه الإشارة للتنفيذ اليدوي الآن.
 """
          await msg.answer(trade_msg, parse_mode="HTML")
-# ----------------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------------
-# دالة تحليل خاص (VIP) 👤 (زر الأدمن لاختبار الـ 98%) - لا تغيير في المنطق
+# دالة تحليل خاص (VIP) 👤 (للأدمن - تستخدم 98%) - لا تغيير في المنطق
 # ----------------------------------------------------------------------------------
 @dp.message(F.text == "تحليل خاص (VIP) 👤")
 async def analyze_private_pair(msg: types.Message):
@@ -1343,8 +1337,6 @@ async def analyze_private_pair(msg: types.Message):
     await msg.answer(private_msg, parse_mode="HTML")
     await msg.answer("❓ **هل دخلت هذه الصفقة؟** (استخدم 'تسجيل نتيجة صفقة 📝' لتسجيل النتيجة يدوياً)", parse_mode="HTML")
 # ----------------------------------------------------------------------------------
-
-# ... (بقية دوال المستخدم والأدمن) تبقى كما هي
 
 @dp.message(F.text == "📊 جرد الصفقات اليومي")
 async def daily_inventory_report(msg: types.Message):
@@ -1485,7 +1477,7 @@ async def about_bot(msg: types.Message):
 3.  <b>عتبات الثقة:</b>
     * **الإرسال التلقائي (الآمن):** لا يتم إرسال أي صفقة تلقائيًا إلا إذا تجاوزت الثقة **{threshold_98_percent}%**. (جدولة: كل 10 دقائق)
     * **الإرسال التلقائي (المُكرر):** إشارات تتجاوز الثقة **{threshold_85_percent}%**. (جدولة: كل 15 دقيقة)
-    * **التحليل المُحسَّن (يدوي):** يمكن طلب صفقة كاملة إذا تجاوزت الثقة **{manual_threshold_percent}%**.
+    * **التحليل المُحسَّن (يدوي):** يمكن طلبه من الأدمن الآن إذا تجاوزت الثقة **{manual_threshold_percent}%**.
 
 4.  <b>نقاط خروج ديناميكية:</b>
     نقاط TP و SL تتغير مع كل صفقة بناءً على التقلب الفعلي للسوق (ATR)، مما يضمن تحديد هدف ووقف مناسبين لظروف السوق الحالية.
@@ -1508,16 +1500,51 @@ async def count_users(msg: types.Message):
     total = get_total_users()
     await msg.reply(f"📊 إجمالي عدد المستخدمين المسجلين في قاعدة البيانات: **{total}**")
 
-@dp.message(F.text == "📢 رسالة لكل المستخدمين")
-async def prompt_broadcast(msg: types.Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID: return
-    await state.set_state(AdminStates.waiting_broadcast)
-    await msg.reply("📝 أدخل نص الرسالة المراد بثها لجميع المستخدمين (غير المحظورين):")
+# ----------------------------------------------------------------------------------
+# ⚠️ وظائف الإرسال الجماعي الجديدة (مكونة من ثلاث خطوات: السؤال، الإدخال، الإرسال)
+# ----------------------------------------------------------------------------------
 
-@dp.message(AdminStates.waiting_broadcast)
+# 1. عند الضغط على زر "📢 رسالة لكل المستخدمين"
+@dp.message(F.text == "📢 رسالة لكل المستخدمين")
+async def prompt_broadcast_target(msg: types.Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID: return
+    
+    # السؤال عن الجمهور المستهدف باستخدام لوحة مفاتيح Inline
+    await msg.reply(
+        "من هو الجمهور الذي تريد إرسال الرسالة إليه؟", 
+        reply_markup=broadcast_target_keyboard()
+    )
+
+# 2. معالجة اختيار الجمهور
+@dp.callback_query(F.data.startswith("broadcast_target_"))
+async def process_broadcast_target(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID: return
+    
+    target = call.data.split('_')[-1]
+    
+    if target == "cancel":
+        await state.clear()
+        await call.message.edit_text("❌ تم إلغاء عملية البث.", reply_markup=None)
+        await call.answer()
+        return
+        
+    # حفظ الهدف وتغيير الحالة لانتظار الرسالة
+    target_msg = "لجميع المستخدمين (VIP وغير VIP)" if target == "all" else "للـ VIP فقط"
+    await state.update_data(broadcast_target=target)
+    await state.set_state(AdminStates.waiting_broadcast_text)
+    
+    await call.message.edit_text(
+        f"✅ تم اختيار: **{target_msg}**.\n\nالآن، يرجى إدخال نص الرسالة المراد بثها:"
+    )
+    await call.answer()
+
+# 3. إرسال الرسالة للجمهور المحدد
+@dp.message(AdminStates.waiting_broadcast_text)
 async def send_broadcast(msg: types.Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
     
+    data = await state.get_data()
+    broadcast_target = data.get('broadcast_target', 'all')
     await state.clear()
     
     broadcast_text = msg.text
@@ -1526,15 +1553,28 @@ async def send_broadcast(msg: types.Message, state: FSMContext):
     
     await msg.reply("⏳ جارٍ إرسال الرسالة...")
     
+    # تحديد الجمهور الفعلي والإرسال
     for uid, is_banned_status in all_users:
-        if is_banned_status == 0 and uid != ADMIN_ID: 
-            try:
-                await bot.send_message(uid, broadcast_text, parse_mode="HTML")
-                sent_count += 1
-            except Exception:
-                pass 
+        # الشرط الأساسي: غير محظور وليس الأدمن
+        if is_banned_status == 0 and uid != ADMIN_ID:
+            
+            should_send = False
+            if broadcast_target == 'all':
+                should_send = True
+            elif broadcast_target == 'vip' and is_user_vip(uid): # التحقق من حالة VIP
+                should_send = True
+            
+            if should_send:
+                try:
+                    await bot.send_message(uid, broadcast_text, parse_mode="HTML")
+                    sent_count += 1
+                except Exception:
+                    pass 
                 
-    await msg.reply(f"✅ تم إرسال الرسالة بنجاح إلى **{sent_count}** مستخدم غير محظور.", reply_markup=admin_menu())
+    target_msg = "لجميع المستخدمين غير المحظورين" if broadcast_target == 'all' else "للمشتركين VIP فقط"
+    await msg.reply(f"✅ تم إرسال الرسالة بنجاح إلى **{sent_count}** مستخدم ({target_msg}).", reply_markup=admin_menu())
+
+# ----------------------------------------------------------------------------------
 
 @dp.message(F.text == "🚫 حظر مستخدم")
 async def prompt_ban(msg: types.Message, state: FSMContext):
@@ -1635,7 +1675,7 @@ async def display_user_status(msg: types.Message):
     await msg.reply(report, parse_mode="HTML")
 
 # ===============================================
-# === دالة متابعة الصفقات (Trade Monitoring) - لا تغيير ===
+# === دالة متابعة الصفقات (Trade Monitoring) ===
 # ===============================================
 
 async def check_open_trades():
@@ -1709,7 +1749,7 @@ async def check_open_trades():
                 await bot.send_message(ADMIN_ID, f"🔔 تم إغلاق الصفقة **{trade_id}** بنجاح على: {exit_status}", parse_mode="HTML")
 
 # ===============================================
-# === إعداد المهام المجدولة (Setup Scheduled Tasks) (تم تعديل المنطق) ===
+# === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
 # ===============================================
 
 def is_weekend_closure():
