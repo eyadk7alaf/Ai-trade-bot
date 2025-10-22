@@ -1,4 +1,4 @@
-import asyncio
+Import asyncio
 import time
 import os
 import psycopg2
@@ -88,7 +88,7 @@ bot = Bot(token=BOT_TOKEN,
 dp = Dispatcher(storage=MemoryStorage())
 
 # =============== قاعدة بيانات PostgreSQL (نفس الكود) ===============
-# ... (DATABASE_URL, get_db_connection, init_db, log_auto_trade_sent, get_last_auto_trades, get_all_users_ids, is_user_vip, وغيرها من دوال CRUD) ...
+# ... (DATABASE_URL, get_db_connection, init_db, log_auto_trade_sent, get_last_auto_trades, get_all_users_ids, is_user_vip، وغيرها من دوال CRUD - لم يتم تعديلها هنا) ...
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -612,7 +612,9 @@ def calculate_adx(df, window=14):
     df['up'] = df['High'] - df['High'].shift()
     df['down'] = df['Low'].shift() - df['Low']
     df['+DM'] = df['up'].where((df['up'] > 0) & (df['up'] > df['down']), 0)
+    df['+DM'] = df['+DM'].fillna(0) # 👈 Fix for NaN on first row
     df['-DM'] = df['down'].where((df['down'] > 0) & (df['down'] > df['up']), 0)
+    df['-DM'] = df['-DM'].fillna(0) # 👈 Fix for NaN on first row
     
     # Exponential smoothing of TR and DMs
     def smooth(series, periods):
@@ -632,14 +634,28 @@ def calculate_adx(df, window=14):
     
     return df
 
+# ⚠️ تم تحديث دالة get_signal_and_confidence لعرض أعلى ثقة تم الوصول إليها
 def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[str, float, str, float, float, float, float, str]:
     """
-    تحليل مزدوج (Scalping / Long-Term) بفلاتر متغيرة حسب الثقة المطلوبة (98% أو 85%).
+    تحليل مزدوج (Scalping / Long-Term) بفلاتر متغيرة.
+    
+    يتم إعادة أعلى إشارة تم العثور عليها (حتى لو لم تحقق target_confidence)
+    للسماح لزر الأدمن بعرض أقرب إشارة.
     """
     global SL_FACTOR, SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR, ADX_SCALPING_MIN, ADX_LONGTERM_MIN, BB_PROXIMITY_THRESHOLD, MIN_FILTERS_FOR_98, MIN_FILTERS_FOR_85
     
+    IS_AUTO_SEND = target_confidence == CONFIDENCE_THRESHOLD_98 or target_confidence == CONFIDENCE_THRESHOLD_85
     REQUIRED_FILTERS = MIN_FILTERS_FOR_98 if target_confidence == CONFIDENCE_THRESHOLD_98 else MIN_FILTERS_FOR_85
     
+    # متغيرة لتتبع أفضل إشارة تم العثور عليها (الأقرب للثقة المطلوبة)
+    best_action = "HOLD"
+    best_confidence = 0.0
+    best_entry = 0.0
+    best_sl = 0.0
+    best_tp = 0.0
+    best_sl_distance = 0.0
+    best_trade_type = "NONE"
+
     try:
         # جلب البيانات لجميع الأطر الزمنية المطلوبة
         data_1m = fetch_ohlcv_data(symbol, "1m", limit=200)
@@ -737,18 +753,18 @@ def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[st
 
         if is_buy_signal_15m or is_sell_signal_15m:
             
-            # فلتر 1: EMA Crossover 15m
+            # فلتر 1: EMA Crossover 15m (EMA)
             passed_filters_lt += 1
             
             # فلتر 2: الاتجاه قوي على 15m (ADX) - تم التخفيف في المتغيرات
             if current_adx_15m >= ADX_LONGTERM_MIN:
                 passed_filters_lt += 1
                 
-            # فلتر 3: توافق 30m
+            # فلتر 3: توافق 30m (HTF)
             if (htf_trend_30m == "BULLISH" and is_buy_signal_15m) or (htf_trend_30m == "BEARISH" and is_sell_signal_15m):
                 passed_filters_lt += 1
                 
-            # فلتر 4: توافق 1h
+            # فلتر 4: توافق 1h (HTF)
             if (htf_trend_1h == "BULLISH" and is_buy_signal_15m) or (htf_trend_1h == "BEARISH" and is_sell_signal_15m):
                 passed_filters_lt += 1
                 
@@ -760,110 +776,137 @@ def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[st
             if (data_15m['+DI'].iloc[-1] > data_15m['-DI'].iloc[-1] and is_buy_signal_15m) or (data_15m['+DI'].iloc[-1] < data_15m['-DI'].iloc[-1] and is_sell_signal_15m):
                 passed_filters_lt += 1
                 
-            # فلتر 7: RSI (5m) ليس في منطقة التشبع الشديد
+            # فلتر 7: RSI (5m) ليس في منطقة التشبع الشديد (RSI)
             if (current_rsi < 80 and is_buy_signal_15m) or (current_rsi > 20 and is_sell_signal_15m):
                  passed_filters_lt += 1
                  
-            # التحقق من عدد الفلاتر المطلوبة
-            if passed_filters_lt >= REQUIRED_FILTERS:
-                action_lt = "BUY" if is_buy_signal_15m else "SELL"
+            # حساب الثقة لتحديد أفضل إشارة (100% / 7 فلاتر)
+            # هذه هي الثقة الفعلية التي تم تحقيقها
+            calculated_confidence_lt = min(1.0, passed_filters_lt / MIN_FILTERS_FOR_98) 
+
+            # التحقق من عدد الفلاتر المطلوبة للإرسال التلقائي/التحليل اليدوي
+            if passed_filters_lt >= REQUIRED_FILTERS or (not IS_AUTO_SEND and calculated_confidence_lt > best_confidence):
                 
-        if action_lt != "HOLD":
-            action = action_lt
-            trade_type = "LONG_TERM"
-            confidence = target_confidence 
-            rr_factor = LONGTERM_RR_FACTOR
+                # الإشارة التي تحقق أعلى ثقة (سواء 98%+ أو 85%+) يتم تخزينها كأفضل إشارة
+                if IS_AUTO_SEND and passed_filters_lt >= REQUIRED_FILTERS:
+                     # في حالة الإرسال التلقائي، يتم تثبيت الثقة عند العتبة المطلوبة
+                    best_confidence = target_confidence 
+                elif not IS_AUTO_SEND: 
+                    # في حالة زر الأدمن (85%+)، نسجل الثقة الفعلية التي حققتها الإشارة
+                    best_confidence = calculated_confidence_lt
+
+                best_action = "BUY" if is_buy_signal_15m else "SELL"
+                best_trade_type = "LONG_TERM"
+                
+                # حساب نقاط الخروج
+                risk_amount = max(current_atr * SL_FACTOR, MIN_SL_DISTANCE) 
+                best_sl_distance = risk_amount
+                rr_factor = LONGTERM_RR_FACTOR
+                
+                if best_action == "BUY":
+                    best_sl = entry_price - risk_amount 
+                    best_tp = entry_price + (risk_amount * rr_factor) 
+                else: # SELL
+                    best_sl = entry_price + risk_amount
+                    best_tp = entry_price - (risk_amount * rr_factor)
+                
+                best_entry = entry_price
         
         # ===============================================
         # === 2. محاولة استخراج إشارة SCALPING (الخيار الثاني) ===
         # ===============================================
         
-        else: # إذا لم نجد إشارة Long-Term
+        action_sc = "HOLD"
+        passed_filters_sc = 0
             
-            action_sc = "HOLD"
-            passed_filters_sc = 0
+        # الشرط الأولي (كروس أوفر على 1m)
+        ema_fast_prev = data_1m['EMA_5'].iloc[-2]
+        ema_slow_prev = data_1m['EMA_20'].iloc[-2]
+        ema_fast_current = data_1m['EMA_5'].iloc[-1]
+        ema_slow_current = data_1m['EMA_20'].iloc[-1]
             
-            # الشرط الأولي (كروس أوفر على 1m)
-            ema_fast_prev = data_1m['EMA_5'].iloc[-2]
-            ema_slow_prev = data_1m['EMA_20'].iloc[-2]
-            ema_fast_current = data_1m['EMA_5'].iloc[-1]
-            ema_slow_current = data_1m['EMA_20'].iloc[-1]
-            
-            is_buy_signal_1m = (ema_fast_prev <= ema_slow_prev and ema_fast_current > ema_slow_current)
-            is_sell_signal_1m = (ema_fast_prev >= ema_slow_prev and ema_fast_current < ema_slow_current)
+        is_buy_signal_1m = (ema_fast_prev <= ema_slow_prev and ema_fast_current > ema_slow_current)
+        is_sell_signal_1m = (ema_fast_prev >= ema_slow_prev and ema_fast_current < ema_slow_current)
 
-            if is_buy_signal_1m or is_sell_signal_1m: 
+        if is_buy_signal_1m or is_sell_signal_1m: 
                 
-                # فلتر 1: EMA Crossover 1m
+            # فلتر 1: EMA Crossover 1m (EMA)
+            passed_filters_sc += 1
+                
+            # فلتر 2: الاتجاه قوي على 5m (ADX)
+            if current_adx_5m >= ADX_SCALPING_MIN:
                 passed_filters_sc += 1
-                
-                # فلتر 2: الاتجاه قوي على 5m (ADX) - تم التخفيف في المتغيرات
-                if current_adx_5m >= ADX_SCALPING_MIN:
-                    passed_filters_sc += 1
                     
-                # فلتر 3: توافق 15m (الاتجاه الأعلى)
-                if (htf_trend_15m == "BULLISH" and is_buy_signal_1m) or (htf_trend_15m == "BEARISH" and is_sell_signal_1m):
-                    passed_filters_sc += 1
+            # فلتر 3: توافق 15m (HTF)
+            if (htf_trend_15m == "BULLISH" and is_buy_signal_1m) or (htf_trend_15m == "BEARISH" and is_sell_signal_1m):
+                passed_filters_sc += 1
                     
-                # فلتر 4: RSI (في منطقة زخم جيد)
-                rsi_ok_buy = (current_rsi > 50 and current_rsi < 70)
-                rsi_ok_sell = (current_rsi < 50 and current_rsi > 30)
-                if (rsi_ok_buy and is_buy_signal_1m) or (rsi_ok_sell and is_sell_signal_1m):
-                    passed_filters_sc += 1
+            # فلتر 4: RSI (في منطقة زخم جيد) (RSI)
+            rsi_ok_buy = (current_rsi > 50 and current_rsi < 70)
+            rsi_ok_sell = (current_rsi < 50 and current_rsi > 30)
+            if (rsi_ok_buy and is_buy_signal_1m) or (rsi_ok_sell and is_sell_signal_1m):
+                passed_filters_sc += 1
                     
-                # فلتر 5 (إضافي للـ 98%): البولينجر باند (قرب القاع/القمة)
-                bb_ok_buy = (entry_price - latest_bb_lower_5m) < BB_PROXIMITY_THRESHOLD and entry_price > latest_bb_lower_5m
-                bb_ok_sell = (latest_bb_upper_5m - entry_price) < BB_PROXIMITY_THRESHOLD and entry_price < latest_bb_upper_5m
-                
-                # ⚠️ تخفيف: لا نطلب هذا الفلتر لـ 85%
-                if target_confidence == CONFIDENCE_THRESHOLD_98:
-                    if (bb_ok_buy and is_buy_signal_1m) or (bb_ok_sell and is_sell_signal_1m):
-                        passed_filters_sc += 1
+            # فلتر 5: البولينجر باند (BB)
+            bb_ok_buy = (entry_price - latest_bb_lower_5m) < BB_PROXIMITY_THRESHOLD and entry_price > latest_bb_lower_5m
+            bb_ok_sell = (latest_bb_upper_5m - entry_price) < BB_PROXIMITY_THRESHOLD and entry_price < latest_bb_upper_5m
+            if (bb_ok_buy and is_buy_signal_1m) or (bb_ok_sell and is_sell_signal_1m):
+                 # ⚠️ نطلب هذا الفلتر لـ 98% (يتم احتسابه كـ 0.14)
+                 # ⚠️ لا نطلبه لـ 85% كشرط أساسي (بل كفلتر إضافي إن وجد)
+                if IS_AUTO_SEND and target_confidence == CONFIDENCE_THRESHOLD_98:
+                    passed_filters_sc += 1
+                elif not IS_AUTO_SEND: # في حالة زر الأدمن (85%+) نعتبره فلتر داعم (يحسب في الثقة الفعلية)
+                    passed_filters_sc += 1
 
-                # فلتر 6 (إضافي للـ 98%): SMA 200 (5m)
-                sma_ok_buy = entry_price > latest_sma_200_5m
-                sma_ok_sell = entry_price < latest_sma_200_5m
-                
-                # ⚠️ تخفيف: لا نطلب هذا الفلتر لـ 85%
-                if target_confidence == CONFIDENCE_THRESHOLD_98:
-                    if (sma_ok_buy and is_buy_signal_1m) or (sma_ok_sell and is_sell_signal_1m):
-                        passed_filters_sc += 1
-                    
-                # فلتر 7 (إضافي للـ 98%): توافق 5m (الاتجاه الفعلي)
-                if (htf_trend_5m == "BULLISH" and is_buy_signal_1m) or (htf_trend_5m == "BEARISH" and is_sell_signal_1m):
+            # فلتر 6: SMA 200 (5m)
+            sma_ok_buy = entry_price > latest_sma_200_5m
+            sma_ok_sell = entry_price < latest_sma_200_5m
+            if (sma_ok_buy and is_buy_signal_1m) or (sma_ok_sell and is_sell_signal_1m):
+                 # ⚠️ نطلبه لـ 98% (يتم احتسابه كـ 0.14)
+                 # ⚠️ لا نطلبه لـ 85% كشرط أساسي
+                if IS_AUTO_SEND and target_confidence == CONFIDENCE_THRESHOLD_98:
+                    passed_filters_sc += 1
+                elif not IS_AUTO_SEND: # في حالة زر الأدمن (85%+) نعتبره فلتر داعم (يحسب في الثقة الفعلية)
                     passed_filters_sc += 1
                     
-                # التحقق من عدد الفلاتر المطلوبة
-                if passed_filters_sc >= REQUIRED_FILTERS:
-                    action_sc = "BUY" if is_buy_signal_1m else "SELL"
-                                    
-            if action_sc != "HOLD":
-                action = action_sc
-                trade_type = "SCALPING"
-                confidence = target_confidence 
+            # فلتر 7: توافق 5m (HTF)
+            if (htf_trend_5m == "BULLISH" and is_buy_signal_1m) or (htf_trend_5m == "BEARISH" and is_sell_signal_1m):
+                 passed_filters_sc += 1
+                
+            # حساب الثقة لتحديد أفضل إشارة
+            calculated_confidence_sc = min(1.0, passed_filters_sc / MIN_FILTERS_FOR_98) 
+
+            # التحقق من عدد الفلاتر المطلوبة للإرسال التلقائي/التحليل اليدوي
+            if passed_filters_sc >= REQUIRED_FILTERS or (not IS_AUTO_SEND and calculated_confidence_sc > best_confidence):
+                
+                if IS_AUTO_SEND and passed_filters_sc >= REQUIRED_FILTERS:
+                    best_confidence = target_confidence 
+                elif not IS_AUTO_SEND: 
+                    best_confidence = calculated_confidence_sc
+                
+                best_action = "BUY" if is_buy_signal_1m else "SELL"
+                best_trade_type = "SCALPING"
+                
+                # حساب نقاط الخروج
+                risk_amount = max(current_atr * SL_FACTOR, MIN_SL_DISTANCE) 
+                best_sl_distance = risk_amount
                 rr_factor = SCALPING_RR_FACTOR
-            else:
-                action = "HOLD"
-                trade_type = "NONE"
-                confidence = 0.0
+                
+                if best_action == "BUY":
+                    best_sl = entry_price - risk_amount 
+                    best_tp = entry_price + (risk_amount * rr_factor) 
+                else: # SELL
+                    best_sl = entry_price + risk_amount
+                    best_tp = entry_price - (risk_amount * rr_factor)
+                    
+                best_entry = entry_price
 
         # ===============================================
-        # === حساب نقاط الخروج والتقرير النهائي ===
+        # === الإخراج النهائي (أفضل إشارة تم العثور عليها) ===
         # ===============================================
         
-        if action != "HOLD":
-            risk_amount = max(current_atr * SL_FACTOR, MIN_SL_DISTANCE) 
-            stop_loss_distance = risk_amount
-            
-            if action == "BUY":
-                stop_loss = entry_price - risk_amount 
-                take_profit = entry_price + (risk_amount * rr_factor) 
-            
-            elif action == "SELL":
-                stop_loss = entry_price + risk_amount
-                take_profit = entry_price - (risk_amount * rr_factor)
-                
-            price_msg = f"""
+        # إنشاء رسالة معلومات السعر
+        price_msg = f"""
 📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {price_source})
 السعر: ${entry_price:,.2f} | الوقت: {latest_time} UTC
 
@@ -875,20 +918,13 @@ def get_signal_and_confidence(symbol: str, target_confidence: float) -> tuple[st
 - **SMA 200 (5m):** {latest_sma_200_5m:,.2f}
 - **الاتجاهات (5m/15m/30m/1h):** {htf_trend_5m[0]}/{htf_trend_15m[0]}/{htf_trend_30m[0]}/{htf_trend_1h[0]}
 """
-            return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance, trade_type
         
-        else:
-            price_msg = f"""
-📊 آخر سعر لـ <b>{DISPLAY_SYMBOL}</b> (المصدر: {price_source})
-السعر: ${entry_price:,.2f} | الوقت: {latest_time} UTC
-
-**تحليل المؤشرات:**
-- **RSI (1m):** {current_rsi:.2f} 
-- **ATR (1m):** {current_atr:.2f} 
-- **ADX (5m/15m):** {current_adx_5m:.2f}/{current_adx_15m:.2f} 
-- **الاتجاهات (30m/1h):** {htf_trend_30m[0]}/{htf_trend_1h[0]}
-"""
-            return price_msg, confidence, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
+        # إذا لم يتم العثور على أي إشارة تحقق الحد الأدنى لفلاتر الـ 85%
+        if best_action == "HOLD":
+            return price_msg, 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
+            
+        # إذا تم العثور على إشارة بأي ثقة، يتم إرجاع تفاصيلها
+        return price_msg, best_confidence, best_action, best_entry, best_sl, best_tp, best_sl_distance, best_trade_type
         
     except Exception as e:
         print(f"❌ فشل في جلب بيانات التداول لـ XAUUSD أو التحليل: {e}")
@@ -908,6 +944,8 @@ async def send_auto_trade_signal(confidence_target: float):
     print(f"🔎 بدأ البحث التلقائي عن صفقات {threshold_percent}%...")
     
     try:
+        # ⚠️ في حالة الإرسال التلقائي، نمرر الثقة المطلوبة (98% أو 85%) 
+        # لضمان أن الدالة ترجع أفضل إشارة تحقق هذه العتبة.
         price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL, confidence_target)
     except Exception as e:
         print(f"❌ خطأ حرج أثناء التحليل التلقائي {threshold_percent}%: {e}")
@@ -916,12 +954,14 @@ async def send_auto_trade_signal(confidence_target: float):
     confidence_percent = confidence * 100
     DISPLAY_SYMBOL = "XAUUSD" 
     
-    rr_factor_used = SCALALING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
+    rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
 
+    # الشرط هنا هو: أن يكون هناك إشارة (HOLD != HOLD) وأن تحقق الثقة المطلوبة
     if action != "HOLD" and confidence >= threshold:
         
         print(f"✅ إشارة {action} قوية جداً تم العثور عليها ({trade_type}) (الثقة: {confidence_percent:.2f}%). جارٍ الإرسال...")
         
+        # ⚠️ يتم إرسال الإشارة الكاملة لجميع المشتركين
         trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
         
         trade_msg = f"""
@@ -1199,10 +1239,11 @@ async def analyze_market_now(msg: types.Message):
     
     await msg.reply(f"⏳ جارٍ تحليل وضع السوق (باستخدام فلاتر 98%)...")
     
+    # ⚠️ نستخدم CONFIDENCE_THRESHOLD_98 (0.98) للتأكد من أننا نرى إشارة الـ 98% فقط
     price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL, CONFIDENCE_THRESHOLD_98)
     confidence_percent = confidence * 100
     
-    if action == "HOLD" or confidence < 0.01:
+    if action == "HOLD" or confidence < CONFIDENCE_THRESHOLD_98:
          status_msg = f"""
 💡 **تقرير وضع السوق الحالي - XAUUSD**
 ━━━━━━━━━━━━━━━
@@ -1214,7 +1255,7 @@ async def analyze_market_now(msg: types.Message):
 """
          await msg.answer(status_msg, parse_mode="HTML")
     
-    else:
+    else: # في حالة الثقة كانت >= 98%
         status_msg = f"""
 💡 **تقرير وضع السوق الحالي - XAUUSD**
 ━━━━━━━━━━━━━━━
@@ -1227,7 +1268,7 @@ async def analyze_market_now(msg: types.Message):
         await msg.answer(status_msg, parse_mode="HTML")
 
 # ----------------------------------------------------------------------------------
-# ⚠️ دالة تحليل فوري مُحسَّن (85%+) 🚀 (زر الأدمن للتنفيذ اليدوي)
+# ⚠️ دالة تحليل فوري مُحسَّن (85%+) 🚀 (زر الأدمن للتنفيذ اليدوي) - تم التعديل هنا
 # ----------------------------------------------------------------------------------
 @dp.message(F.text == "تحليل فوري مُحسَّن (85%+) 🚀")
 async def analyze_market_now_enhanced_admin(msg: types.Message):
@@ -1239,28 +1280,51 @@ async def analyze_market_now_enhanced_admin(msg: types.Message):
 
     await msg.reply(f"⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول تتجاوز {int(REQUIRED_MANUAL_CONFIDENCE*100)}% ثقة...")
     
-    # تستخدم REQUIRED_MANUAL_CONFIDENCE (85%)
-    price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL, REQUIRED_MANUAL_CONFIDENCE)
+    # ⚠️ نستخدم CONFIDENCE_THRESHOLD_85 (0.85) كـ target_confidence 
+    # هذا يضمن أن الدالة سترجع أفضل إشارة حتى لو لم تحقق الـ 85%
+    price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL, CONFIDENCE_THRESHOLD_85)
     
     confidence_percent = confidence * 100
     threshold_percent = int(REQUIRED_MANUAL_CONFIDENCE * 100)
     
-    if confidence == 0.0 and sl == 0.0 and ("لا تتوفر" in price_info_msg or "عرضي" in price_info_msg or "هادئ" in price_info_msg):
-        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}", parse_mode="HTML")
+    if confidence < 0.01: # فشل التحليل أو هدوء السوق
+        await msg.answer(f"❌ فشل التحليل أو هدوء السوق:\n{price_info_msg}", parse_mode="HTML")
         return
         
+    # السيناريو 1: الثقة غير كافية (أقل من 85%) - نعرض الإشارة الأقرب
     if action == "HOLD" or confidence < REQUIRED_MANUAL_CONFIDENCE:
+         
+         if action == "HOLD":
+             status_msg = "لا توجد إشارة واضحة (HOLD)"
+         else:
+             status_msg = f"الثقة غير كافية للدخول. أقرب إشارة هي **{action}** ({trade_type})"
+             
          status_msg = f"""
 💡 **تقرير التحليل الفوري المُحسَّن - XAUUSD**
 ━━━━━━━━━━━━━━━
 🔎 **الإشارة الحالية:** {action}
-🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
-❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' or confidence < 0.1 else 'الثقة غير كافية للدخول')}
+🔒 **الثقة التي تم الوصول إليها:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
+❌ **القرار:** {status_msg}
 ━━━━━━━━━━━━━━━
 {price_info_msg}
 """
+         # إذا كانت الإشارة ليست HOLD (أي BUY أو SELL بثقة أقل من 85%)، نعرضها كنص فقط
+         if action != "HOLD" and entry != 0.0:
+             rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
+             trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
+             
+             status_msg += f"""
+⚠️ **تفاصيل الإشارة القريبة:**
+🚨 TRADE TYPE: **{trade_type_msg}** 🚨
+  - **ACTION:** {action} 
+  - **ENTRY:** ${entry:,.2f}
+  - **TP:** ${tp:,.2f} | **SL:** ${sl:,.2f}
+  - **R/R:** 1:{rr_factor_used:.1f}
+"""
+             
          await msg.answer(status_msg, parse_mode="HTML")
     
+    # السيناريو 2: الثقة كافية (أكبر من أو تساوي 85%) - نعرض صفقة كاملة للأدمن
     elif confidence >= REQUIRED_MANUAL_CONFIDENCE:
          rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
          trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
@@ -1275,6 +1339,7 @@ async def analyze_market_now_enhanced_admin(msg: types.Message):
 💰 **ENTRY:** ${entry:,.2f}
 🎯 **TAKE PROFIT (TP):** ${tp:,.2f}
 🛑 **STOP LOSS (SL):** ${sl:,.2f}
+🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b>
 ⚖️ **RISK/REWARD:** 1:{rr_factor_used:.1f} (SL/TP)
 ━━━━━━━━━━━━━━━
 **📊 ملاحظة:** هذه الإشارة للتنفيذ اليدوي الآن.
