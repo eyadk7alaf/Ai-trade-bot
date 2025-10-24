@@ -1,4 +1,4 @@
-import asyncio
+Import asyncio
 import time
 import os
 import psycopg2
@@ -978,7 +978,7 @@ async def send_periodic_activity_message():
 
 # =============== القوائم والأزرار (تم تحديث قائمة الأدمن والمستخدم) ===============
 
-# لوحة مفاتيح اختيار جمهور البث الجديدة
+# ⚠️ **الإصلاح هنا:** تم تعديل إنشاء InlineKeyboardMarkup لاستخدام inline_keyboard
 def broadcast_target_keyboard():
     keyboard = [
         [
@@ -987,7 +987,8 @@ def broadcast_target_keyboard():
         ],
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="broadcast_cancel")]
     ]
-    return InlineKeyboardMarkup(keyboard=keyboard)
+    # 💡 استخدام inline_keyboard لحل مشكلة Pydantic Field required
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def user_menu():
@@ -1352,7 +1353,7 @@ async def prompt_broadcast_target(msg: types.Message, state: FSMContext):
     
     await msg.reply(
         "من هو الجمهور الذي تريد إرسال الرسالة إليه؟", 
-        reply_markup=broadcast_target_keyboard()
+        reply_markup=broadcast_target_keyboard() # 💡 الاستدعاء الصحيح للدالة المُعدَّلة
     )
 
 # 2. معالجة اختيار الجمهور
