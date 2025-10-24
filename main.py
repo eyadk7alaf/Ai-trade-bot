@@ -40,22 +40,22 @@ TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "XAUT/USDT")
 CCXT_EXCHANGE = os.getenv("CCXT_EXCHANGE", "bybit") 
 ADMIN_TRADE_SYMBOL = os.getenv("ADMIN_TRADE_SYMBOL", "XAUT/USDT") 
 
-# ⚠️ متغيرات الثقة
-REQUIRED_MANUAL_CONFIDENCE = float(os.getenv("REQUIRED_MANUAL_CONFIDENCE", "0.85")) 
+# ⚠️ متغيرات الثقة (تم تحديث 85% لتصبح 90%)
+REQUIRED_MANUAL_CONFIDENCE = float(os.getenv("REQUIRED_MANUAL_CONFIDENCE", "0.90")) # ⚠️ تفعيل الثقة 90% كحد أدنى
 CONFIDENCE_THRESHOLD_98 = float(os.getenv("CONFIDENCE_THRESHOLD_98", "0.98")) 
-CONFIDENCE_THRESHOLD_85 = float(os.getenv("CONFIDENCE_THRESHOLD_85", "0.85")) 
+CONFIDENCE_THRESHOLD_85 = float(os.getenv("CONFIDENCE_THRESHOLD_85", "0.90")) # ⚠️ تفعيل الثقة 90% كحد أدنى
 
-# ⚠️ متغيرات الجدولة **المُعدَّلة** (للفحص كل 3 دقائق)
+# ⚠️ متغيرات الجدولة 
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30"))             
 TRADE_ANALYSIS_INTERVAL_98 = 180   # ⚠️ توحيد التردد: كل 3 دقائق                                       
 TRADE_ANALYSIS_INTERVAL_85 = 180   # ⚠️ توحيد التردد: كل 3 دقائق                                       
 ACTIVITY_ALERT_INTERVAL = 3 * 3600                                             
 
 # 🌟🌟🌟 المتغيرات **المُعدَّلة** للمخاطرة المنخفضة (Less Risk) 🌟🌟🌟
-SL_FACTOR = 2.0           # ⚠️ تم تعديله من 3.0 إلى 2.0 لتقليل عرض الـ SL
-SCALPING_RR_FACTOR = 1.5  # ثابت
-LONGTERM_RR_FACTOR = 1.5  # ⚠️ تم تعديله من 3.0 إلى 1.5 لتقريب الأهداف
-MAX_SL_DISTANCE = 7.0     # ⚠️ تم تعديله من 15.0 إلى 7.0 لتقييد الـ SL في السكالبينج
+SL_FACTOR = 3.0           # ⚠️ تم تعديله إلى 3.0 (القيمة القصوى للوقف الواسع) وسيتم حسابه ديناميكيا بين 1.5 و 3.0
+SCALPING_RR_FACTOR = 1.5  
+LONGTERM_RR_FACTOR = 1.5  
+MAX_SL_DISTANCE = 7.0     
 MIN_SL_DISTANCE = 1.5     
 
 # ⚠️ فلاتر ADX الجديدة 
@@ -65,7 +65,7 @@ BB_PROXIMITY_THRESHOLD = 0.5
 
 # ⚠️ الحد الأدنى لعدد الفلاتر المارة
 MIN_FILTERS_FOR_98 = 7 
-MIN_FILTERS_FOR_85 = 5    # ⚠️ تم تعديله من 2 إلى 5 لرفع جودة صفقات 85%
+MIN_FILTERS_FOR_85 = 6    # ⚠️ تم تعديله من 5 إلى 6 لرفع جودة صفقات 90% (CONFIDENCE_THRESHOLD_85)
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 
@@ -533,7 +533,7 @@ class AccessMiddleware(BaseMiddleware):
 
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل (بدون تغيير في منطق التحليل) ===============
+# =============== وظائف التداول والتحليل (مع تعديل SL الديناميكي) ===============
 
 def calculate_adx(df, window=14):
     """
@@ -569,7 +569,6 @@ def calculate_adx(df, window=14):
 def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, float, str, float, float, float, float, str]:
     """
     تحليل مزدوج (Scalping / Long-Term) بفلاتر متغيرة.
-    تم تحديث Scalping ليعمل على إطار 3m بدلاً من 1m.
     """
     global SL_FACTOR, SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR, ADX_SCALPING_MIN, ADX_LONGTERM_MIN, BB_PROXIMITY_THRESHOLD, MIN_FILTERS_FOR_98, MAX_SL_DISTANCE, MIN_SL_DISTANCE, MIN_FILTERS_FOR_85
     
@@ -740,8 +739,20 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
                 best_action = "BUY" if is_buy_signal_15m else "SELL"
                 best_trade_type = "LONG_TERM"
                 
-                # حساب نقاط الخروج (بالمتغيرات الجديدة)
-                risk_amount_unlimited = current_atr * SL_FACTOR
+                # 💡 START: التعديل الجذري لضبط SL_FACTOR بناءً على الثقة المكتشفة (90%-98%)
+                confidence_perc = best_confidence * 100 
+                
+                # نطاق SL_FACTOR: من 1.5 (عند 98%) إلى 3.0 (عند 90%)
+                if confidence_perc >= 90.0:
+                    # المعادلة: 3.0 - (فرق الثقة من 90) * (نطاق SL_FACTOR / نطاق الثقة)
+                    dynamic_sl_factor = 3.0 - (confidence_perc - 90.0) * ((3.0 - 1.5) / (98.0 - 90.0))
+                else:
+                    # عند ثقة أقل من 90%، نستخدم أقصى وقف واسع (SL_FACTOR=3.0)
+                    dynamic_sl_factor = 3.0 
+                    
+                risk_amount_unlimited = current_atr * dynamic_sl_factor # استخدام الـ dynamic_sl_factor
+                # 💡 END: التعديل الجذري لضبط SL_FACTOR
+                
                 # 💡 **تم تطبيق MIN_SL_DISTANCE و MAX_SL_DISTANCE هنا**
                 risk_amount = max(MIN_SL_DISTANCE, min(risk_amount_unlimited, MAX_SL_DISTANCE))
                 
@@ -820,8 +831,18 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
                 best_action = "BUY" if is_buy_signal_1m else "SELL"
                 best_trade_type = "SCALPING"
                 
-                # حساب نقاط الخروج (بالمتغيرات الجديدة)
-                risk_amount_unlimited = current_atr * SL_FACTOR
+                # 💡 START: التعديل الجذري لضبط SL_FACTOR بناءً على الثقة المكتشفة (90%-98%)
+                confidence_perc = best_confidence * 100 
+                
+                # نطاق SL_FACTOR: من 1.5 (عند 98%) إلى 3.0 (عند 90%)
+                if confidence_perc >= 90.0:
+                    dynamic_sl_factor = 3.0 - (confidence_perc - 90.0) * ((3.0 - 1.5) / (98.0 - 90.0))
+                else:
+                    dynamic_sl_factor = 3.0 
+                    
+                risk_amount_unlimited = current_atr * dynamic_sl_factor # استخدام الـ dynamic_sl_factor
+                # 💡 END: التعديل الجذري لضبط SL_FACTOR
+                
                 # 💡 **تم تطبيق MIN_SL_DISTANCE و MAX_SL_DISTANCE هنا**
                 risk_amount = max(MIN_SL_DISTANCE, min(risk_amount_unlimited, MAX_SL_DISTANCE))
                 
@@ -875,11 +896,18 @@ async def send_auto_trade_signal(confidence_target: float):
     rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
     
     # ⚠️ التحقق من الحد الأدنى للفلاتر المارة
-    required_min_filters = MIN_FILTERS_FOR_98 if threshold == CONFIDENCE_THRESHOLD_98 else MIN_FILTERS_FOR_85
+    # 💡 التعديل هنا: توحيد عملية الإرسال لتعتمد على الحد الأدنى 90% (CONFIDENCE_THRESHOLD_85) والحد الأقصى 98% (CONFIDENCE_THRESHOLD_98)
+    # MIN_FILTERS_FOR_85 هي الآن 6/7، وهي الحد الأدنى لجودة صفقة 90%+
+    min_confidence_to_send = CONFIDENCE_THRESHOLD_85 # 0.90
+    min_filters_to_send = MIN_FILTERS_FOR_85 # 6
+
     current_filters_passed = int(confidence * MIN_FILTERS_FOR_98) # نحسب عدد الفلاتر المارة فعليا (بناءً على 7)
 
-    # الشرط هنا هو: أن يكون هناك إشارة (HOLD != HOLD) وأن تحقق الثقة المطلوبة وعدد الفلاتر المطلوب
-    if action != "HOLD" and confidence >= threshold and current_filters_passed >= required_min_filters:
+    # الشرط هنا هو: أن يكون هناك إشارة (HOLD != HOLD) وأن تحقق الثقة المطلوبة (90% كحد أدنى) وعدد الفلاتر المطلوب (6/7)
+    if action != "HOLD" and confidence >= min_confidence_to_send and current_filters_passed >= min_filters_to_send:
+        
+        # 💡 يتم استخدام أعلى ثقة (98%) لرسائل التنبيه إذا كانت الثقة المكتشفة>=98%
+        alert_confidence_perc = 98 if confidence >= CONFIDENCE_THRESHOLD_98 else 90
         
         print(f"✅ إشارة {action} قوية جداً تم العثور عليها ({trade_type}) (الثقة: {confidence_percent:.2f}%). جارٍ الإرسال...")
         
@@ -889,14 +917,14 @@ async def send_auto_trade_signal(confidence_target: float):
         # ⚠️ يتم عرض قيمة الـ R/R المُعدَّلة هنا
         trade_msg = f"""
 🚨 TRADE TYPE: **{trade_type_msg}** 🚨
-{('🟢' if action == 'BUY' else '🔴')} <b>ALPHA TRADE ALERT - {threshold_percent}% SIGNAL!</b> {('🟢' if action == 'BUY' else '🔴')}
+{('🟢' if action == 'BUY' else '🔴')} <b>ALPHA TRADE ALERT - {alert_confidence_perc}% SIGNAL!</b> {('🟢' if action == 'BUY' else '🔴')}
 ━━━━━━━━━━━━━━━
 📈 **PAIR:** {DISPLAY_SYMBOL} 
 🔥 **ACTION:** {action} (Market Execution)
 💰 **ENTRY:** ${entry:,.2f}
 🎯 **TAKE PROFIT (TP):** ${tp:,.2f}
 🛑 **STOP LOSS (SL):** ${sl:,.2f}
-🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b> ({current_filters_passed}/7 Filters)
+🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b> ({current_filters_passed}/{MIN_FILTERS_FOR_98} Filters)
 ⚖️ **RISK/REWARD:** 1:{rr_factor_used:.1f} (SL/TP)
 ━━━━━━━━━━━━━━━
 ⚠️ **ملاحظة هامة (فرق السعر):** السعر المعروض هو من منصة {CCXT_EXCHANGE}. يرجى التنفيذ **فوراً** على سعر السوق في منصتك الخاصة (MT4/5) مع الأخذ في الاعتبار فوارق الأسعار البسيطة.
@@ -917,12 +945,12 @@ async def send_auto_trade_signal(confidence_target: float):
                 except Exception:
                     pass
             
-            admin_confirmation_msg = f"✅ تم إرسال صفقة تلقائية ({threshold_percent}%) لـ {DISPLAY_SYMBOL}: {action} عند ${entry:,.2f}. تم الإرسال إلى {len(vip_users)} مستخدم VIP. ID: {trade_id}"
+            admin_confirmation_msg = f"✅ تم إرسال صفقة تلقائية ({confidence_percent:.2f}%) لـ {DISPLAY_SYMBOL}: {action} عند ${entry:,.2f}. تم الإرسال إلى {len(vip_users)} مستخدم VIP. ID: {trade_id}"
             if ADMIN_ID != 0:
                  await bot.send_message(ADMIN_ID, admin_confirmation_msg)
                  
     elif action != "HOLD":
-         print(f"❌ لم يتم العثور على إشارة {threshold_percent}% قوية. الثقة: {confidence_percent:.2f}%. الفلاتر المارة: {current_filters_passed}/{required_min_filters}.")
+         print(f"❌ لم يتم العثور على إشارة {threshold_percent}% قوية. الثقة: {confidence_percent:.2f}%. الفلاتر المارة: {current_filters_passed}/{min_filters_to_send}.")
     else:
          print(f"❌ لا توجد إشارة واضحة {threshold_percent}% (HOLD).")
 
@@ -946,7 +974,7 @@ ACTION_PHRASES = [
 RESULT_PHRASES = [
     "لضمان أعلى دقة ممكنة.",
     "لتحقيق أفضل نتائج لأعضائنا.",
-    "لإرسال إشارات ذات ثقة عالية (98%+).",
+    "لإرسال إشارات ذات ثقة عالية (90%+).",
     "للتأكد من أننا جاهزون للفرصة التالية.",
     "لنحول التقلبات إلى أرباح حقيقية."
 ]
@@ -962,7 +990,7 @@ async def send_periodic_activity_message():
 ━━━━━━━━━━━━━━━
 {action} {result}
 
-✅ **الحالة الحالية:** لا تزال الإشارات التلقائية لـ 98% و 85% نشطة.
+✅ **الحالة الحالية:** لا تزال الإشارات التلقائية لـ 98% و 90% نشطة.
 """
     
     all_users = get_all_users_ids()
@@ -1031,7 +1059,7 @@ async def show_last_auto_sends(msg: types.Message):
     last_trades = get_last_auto_trades(5)
     
     if not last_trades:
-        await msg.reply("⚠️ لم يتم إرسال أي صفقات تلقائية (98% أو 85%) بعد.")
+        await msg.reply("⚠️ لم يتم إرسال أي صفقات تلقائية (98% أو 90%) بعد.")
         return
         
     report = "📋 **آخر 5 صفقات تلقائية مُرسلة**\n━━━━━━━━━━━━━━━"
@@ -1128,7 +1156,7 @@ async def analyze_market_now_enhanced_admin(msg: types.Message):
     price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL, True)
     
     confidence_percent = confidence * 100
-    threshold_percent_85 = int(CONFIDENCE_THRESHOLD_85 * 100)
+    threshold_percent_90 = int(CONFIDENCE_THRESHOLD_85 * 100) # استخدام CONFIDENCE_THRESHOLD_85 الذي أصبح 90%
     
     # السيناريو 1: فشل حرج (مثل فشل CCXT)
     if price_info_msg.startswith("❌"):
@@ -1157,8 +1185,8 @@ async def analyze_market_now_enhanced_admin(msg: types.Message):
          auto_send_status = ""
          if confidence >= CONFIDENCE_THRESHOLD_98:
              auto_send_status = "🏆 **(جاهزة للإرسال التلقائي 98%+!)**"
-         elif confidence >= CONFIDENCE_THRESHOLD_85:
-             auto_send_status = "✅ **(جاهزة للإرسال التلقائي 85%+)**"
+         elif confidence >= CONFIDENCE_THRESHOLD_85: # هذا أصبح 90%
+             auto_send_status = "✅ **(جاهزة للإرسال التلقائي 90%+)**"
          else:
              auto_send_status = "⚠️ **(غير كافية للإرسال التلقائي)** - للعرض اليدوي فقط."
              
@@ -1173,7 +1201,7 @@ async def analyze_market_now_enhanced_admin(msg: types.Message):
 💰 **ENTRY:** ${entry:,.2f}
 🎯 **TAKE PROFIT (TP):** ${tp:,.2f}
 🛑 **STOP LOSS (SL):** ${sl:,.2f}
-🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b> (المطلوب لـ 85%: {threshold_percent_85}%)
+🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b> (المطلوب لـ 90%: {threshold_percent_90}%)
 ⚖️ **RISK/REWARD:** 1:{rr_factor_used:.1f} (SL/TP)
 ━━━━━━━━━━━━━━━
 {price_info_msg}
@@ -1300,7 +1328,7 @@ async def contact_support(msg: types.Message):
 @dp.message(F.text == "ℹ️ عن AlphaTradeAI")
 async def about_bot(msg: types.Message):
     threshold_98_percent = int(CONFIDENCE_THRESHOLD_98 * 100)
-    threshold_85_percent = int(CONFIDENCE_THRESHOLD_85 * 100)
+    threshold_90_percent = int(CONFIDENCE_THRESHOLD_85 * 100) # تم تغيير 85% إلى 90%
 
     about_msg = f"""
 🚀 <b>AlphaTradeAI: ثورة التحليل الكمّي في تداول الذهب!</b> 🚀
@@ -1319,10 +1347,10 @@ async def about_bot(msg: types.Message):
 
 3.  <b>عتبات الثقة:</b>
     * **الإرسال التلقائي (الآمن):** لا يتم إرسال أي صفقة تلقائيًا إلا إذا تجاوزت الثقة **{threshold_98_percent}%** وتجاوزت **{MIN_FILTERS_FOR_98} فلاتر**. (جدولة: كل 3 دقائق)
-    * **الإرسال التلقائي (المُكرر):** إشارات تتجاوز الثقة **{threshold_85_percent}%** وتجاوزت **{MIN_FILTERS_FOR_85} فلاتر**. (جدولة: كل 3 دقائق)
+    * **الإرسال التلقائي (المُكرر):** إشارات تتجاوز الثقة **{threshold_90_percent}%** وتجاوزت **{MIN_FILTERS_FOR_85} فلاتر**. (جدولة: كل 3 دقائق)
 
 4.  <b>نقاط خروج ديناميكية:</b>
-    نقاط TP و SL تتغير مع كل صفقة بناءً على التقلب الفعلي للسوق (ATR)، مما يضمن تحديد هدف ووقف مناسبين لظروف السوق الحالية.
+    نقاط TP و SL تتغير مع كل صفقة بناءً على التقلب الفعلي للسوق (ATR) و**مستوى الثقة** (لضمان وقف واسع عند الثقة المنخفضة ووقف ضيق عند الثقة العالية)، مما يضمن تحديد هدف ووقف مناسبين لظروف السوق الحالية.
 
 ━━━━━━━━━━━━━━━
 💰 حوّل التحليل إلى ربح. لا تدع الفرص تفوتك! اضغط على '💰 خطة الأسعار VIP' للاطلاع على العروض الحالية.
@@ -1580,17 +1608,19 @@ async def trade_monitoring_98_percent():
     """مهمة التحليل المستمر وإرسال الإشارات التلقائية 98% (كل 3 دقائق)."""
     await asyncio.sleep(60) 
     while True:
+        # 💡 يتم الآن استخدام دالة send_auto_trade_signal لـ 90% و 98%
         if not is_weekend_closure():
             await send_auto_trade_signal(CONFIDENCE_THRESHOLD_98)
         
         await asyncio.sleep(TRADE_ANALYSIS_INTERVAL_98)
 
 async def trade_monitoring_85_percent():
-    """مهمة التحليل المستمر وإرسال الإشارات التلقائية 85% (كل 3 دقائق)."""
+    """مهمة التحليل المستمر وإرسال الإشارات التلقائية 90% (كل 3 دقائق)."""
     await asyncio.sleep(30) # ابدأ بعد 30 ثانية
     while True:
+        # 💡 يتم الآن استخدام دالة send_auto_trade_signal لـ 90% و 98%
         if not is_weekend_closure():
-            await send_auto_trade_signal(CONFIDENCE_THRESHOLD_85)
+            await send_auto_trade_signal(CONFIDENCE_THRESHOLD_85) # CONFIDENCE_THRESHOLD_85 هي الآن 0.90
         
         await asyncio.sleep(TRADE_ANALYSIS_INTERVAL_85)
         
@@ -1613,7 +1643,7 @@ async def main():
     # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (98% - كل 3 دقائق)
     asyncio.create_task(trade_monitoring_98_percent())
     
-    # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (85% - كل 3 دقائق)
+    # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (90% - كل 3 دقائق)
     asyncio.create_task(trade_monitoring_85_percent())
     
     # 🌟 مهمة رسائل النشاط الدوري (كل 3 ساعات)
