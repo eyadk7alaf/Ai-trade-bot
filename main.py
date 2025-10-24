@@ -18,6 +18,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
+from aiogram.utils import html as h # ⭐️ إضافة مكتبة HTML لتنظيف المدخلات الديناميكية
 
 # =============== تعريف حالات FSM المُعدَّلة والمُضافة ===============
 class AdminStates(StatesGroup):
@@ -45,12 +46,12 @@ CONFIDENCE_THRESHOLD_85 = float(os.getenv("CONFIDENCE_THRESHOLD_85", "0.90"))
 
 # ⚠️ متغيرات الجدولة 
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30"))             
-TRADE_ANALYSIS_INTERVAL_98 = 180   # توحيد التردد: كل 3 دقائق                                       
-TRADE_ANALYSIS_INTERVAL_85 = 180   # توحيد التردد: كل 3 دقائق                                       
-ACTIVITY_ALERT_INTERVAL = 3 * 3600                                             
+TRADE_ANALYSIS_INTERVAL_98 = 3 * 60   # توحيد التردد: كل 3 دقائق                                       
+TRADE_ANALYSIS_INTERVAL_85 = 3 * 60   # توحيد التردد: كل 3 دقائق                                       
+ACTIVITY_ALERT_INTERVAL = 6 * 3600    # 🌟 تم تعديله ليصبح 6 ساعات (6 * 3600 ثانية)                                        
 
 # 🌟🌟🌟 المتغيرات **المُعدَّلة** للمخاطرة المنخفضة 🌟🌟🌟
-SL_FACTOR = 3.0           # القيمة القصوى للوقف الواسع (SL_FACTOR) وسيتم حسابه ديناميكيا بين 1.5 و 3.0
+SL_FACTOR = 3.0           
 SCALPING_RR_FACTOR = 1.5  
 LONGTERM_RR_FACTOR = 1.5  
 MAX_SL_DISTANCE = 7.0     
@@ -168,7 +169,7 @@ def generate_weekly_trade_summary():
         
     # 💡 تم تصحيح تنسيق الرسالة إلى HTML
     report_msg = f"""
-📈 <b>جرد أداء صفقات AlphaTradeAI (آخر 7 أيام)</b>
+<b>📈 جرد أداء صفقات AlphaTradeAI (آخر 7 أيام)</b>
 ━━━━━━━━━━━━━━━
 📨 <b>إجمالي الصفقات المُرسلة:</b> {total_sent}
 🔒 <b>إجمالي الصفقات المغلقة:</b> {total_closed}
@@ -415,7 +416,7 @@ def get_daily_trade_report():
         
     # 💡 تم تصحيح تنسيق الرسالة إلى HTML
     report_msg = f"""
-📈 <b>جرد أداء AlphaTradeAI (آخر 24 ساعة)</b>
+<b>📈 جرد أداء AlphaTradeAI (آخر 24 ساعة)</b>
 ━━━━━━━━━━━━━━━
 📨 <b>إجمالي الصفقات المُرسلة:</b> {total_sent}
 🟢 <b>صفقات حققت الهدف (TP):</b> {hit_tp}
@@ -564,6 +565,22 @@ def calculate_adx(df, window=14):
     
     return df
 
+# 🌟 دالة تحديث is_weekend_closure()
+def is_weekend_closure():
+    """التحقق مما إذا كان إغلاق عطلة نهاية الأسبوع (الجمعة 21:00 UTC إلى الأحد 21:00 UTC)."""
+    now_utc = datetime.now(timezone.utc) 
+    weekday = now_utc.weekday() 
+    
+    # السبت (يوم 5) أو الأحد (يوم 6) قبل الساعة 21:00
+    if weekday == 5 or (weekday == 6 and now_utc.hour < 21): 
+        return True
+    
+    # الجمعة (يوم 4) بعد الساعة 21:00
+    if weekday == 4 and now_utc.hour >= 21:
+        return True
+
+    return False 
+
 def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, float, str, float, float, float, float, str]:
     """
     تحليل مزدوج (Scalping / Long-Term) بفلاتر متغيرة.
@@ -582,14 +599,15 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
     price_info_msg = ""
     
     try:
-        # جلب البيانات لجميع الأطر الزمنية المطلوبة
+        # ************** شرط البيانات الكافية **************
+        # 
+        # 
         data_3m = fetch_ohlcv_data(symbol, "3m", limit=200)   
         data_5m = fetch_ohlcv_data(symbol, "5m", limit=200)
         data_15m = fetch_ohlcv_data(symbol, "15m", limit=200)
         data_30m = fetch_ohlcv_data(symbol, "30m", limit=200)
         data_1h = fetch_ohlcv_data(symbol, "1h", limit=200) 
         
-        # ************** شرط البيانات الكافية **************
         if data_3m.empty or data_5m.empty or data_15m.empty or data_30m.empty or data_1h.empty: 
             return f"❌ لا تتوفر بيانات كافية للتحليل لرمز التداول: <b>{DISPLAY_SYMBOL}</b>.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
 
@@ -865,7 +883,8 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
     except Exception as e:
         print(f"❌ فشل حرج في جلب بيانات التداول أو التحليل: {e}")
         # ⚠️ في حالة الفشل الحرج (مثل فشل CCXT) نرجع رسالة خطأ
-        return f"❌ فشل حرج في جلب بيانات التداول أو التحليل: {e}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
+        # 💡 نستخدم h.escape لتنظيف الخطأ إذا كان يحتوي على رموز HTML
+        return f"❌ فشل حرج في جلب بيانات التداول أو التحليل: {h.escape(str(e))}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
 
 
 async def send_auto_trade_signal(confidence_target: float):
@@ -899,15 +918,15 @@ async def send_auto_trade_signal(confidence_target: float):
         
         print(f"✅ إشارة {action} قوية جداً تم العثور عليها ({trade_type}) (الثقة: {confidence_percent:.2f}%). جارٍ الإرسال...")
         
-        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
-        trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
+        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
+        trade_type_msg = h.bold("SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING")
         
         trade_msg = f"""
-🚨 TRADE TYPE: <b>{trade_type_msg}</b> 🚨
+🚨 TRADE TYPE: {trade_type_msg} 🚨
 {('🟢' if action == 'BUY' else '🔴')} <b>ALPHA TRADE ALERT - {alert_confidence_perc}% SIGNAL!</b> {('🟢' if action == 'BUY' else '🔴')}
 ━━━━━━━━━━━━━━━
 📈 <b>PAIR:</b> {DISPLAY_SYMBOL} 
-🔥 <b>ACTION:</b> {action} (Market Execution)
+🔥 <b>ACTION:</b> <b>{h.escape(action)}</b> (Market Execution)
 💰 <b>ENTRY:</b> ${entry:,.2f}
 🎯 <b>TAKE PROFIT (TP):</b> ${tp:,.2f}
 🛑 <b>STOP LOSS (SL):</b> ${sl:,.2f}
@@ -931,9 +950,9 @@ async def send_auto_trade_signal(confidence_target: float):
                 except Exception:
                     pass
             
-            admin_confirmation_msg = f"✅ تم إرسال صفقة تلقائية ({confidence_percent:.2f}%) لـ {DISPLAY_SYMBOL}: {action} عند ${entry:,.2f}. تم الإرسال إلى {len(vip_users)} مستخدم VIP. ID: {trade_id}"
+            admin_confirmation_msg = f"✅ تم إرسال صفقة تلقائية ({confidence_percent:.2f}%) لـ {DISPLAY_SYMBOL}: <b>{action}</b> عند ${entry:,.2f}. تم الإرسال إلى {len(vip_users)} مستخدم VIP. ID: {trade_id}"
             if ADMIN_ID != 0:
-                 await bot.send_message(ADMIN_ID, admin_confirmation_msg)
+                 await bot.send_message(ADMIN_ID, admin_confirmation_msg, parse_mode="HTML")
                  
     elif action != "HOLD":
          print(f"❌ لم يتم العثور على إشارة {threshold_percent}% قوية. الثقة: {confidence_percent:.2f}%. الفلاتر المارة: {current_filters_passed}/{min_filters_to_send}.")
@@ -971,7 +990,7 @@ async def send_periodic_activity_message():
     action = random.choice(ACTION_PHRASES)
     result = random.choice(RESULT_PHRASES)
     
-    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
     message = f"""
 <b>{heading}</b>
 ━━━━━━━━━━━━━━━
@@ -1045,7 +1064,7 @@ async def show_last_auto_sends(msg: types.Message):
         await msg.reply("⚠️ لم يتم إرسال أي صفقات تلقائية (98% أو 90%) بعد.")
         return
         
-    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
     report = "📋 <b>آخر 5 صفقات تلقائية مُرسلة</b>\n━━━━━━━━━━━━━━━"
     
     for sent_at, confidence, action, trade_type in last_trades:
@@ -1084,41 +1103,51 @@ async def analyze_market_now(msg: types.Message):
         await msg.answer("🚫 هذه الميزة مخصصة للأدمن فقط.")
         return
     
+    # 🌟 فحص العطلة الأسبوعية
+    if is_weekend_closure():
+        await msg.reply("😴 عذراً، سوق الذهب مغلق حالياً بسبب عطلة نهاية الأسبوع (الجمعة 21:00 UTC إلى الأحد 21:00 UTC).")
+        return
+    
     await msg.reply(f"⏳ جارٍ تحليل وضع السوق (باستخدام فلاتر {int(CONFIDENCE_THRESHOLD_98*100)}% لضمان أعلى جودة)..")
     
     # is_admin_manual = False (للتحليل الدقيق الذي يهدف لتأكيد الإرسال التلقائي)
     price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL, False)
     confidence_percent = confidence * 100
     
+    # 💡 تأمين رسالة معلومات السعر
+    price_info_msg_esc = h.escape(price_info_msg)
+    
     if action == "HOLD" or confidence < CONFIDENCE_THRESHOLD_98:
-         # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+         # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML 
          status_msg = f"""
 💡 <b>تقرير وضع السوق الحالي - XAUUSD</b>
 ━━━━━━━━━━━━━━━
-🔎 <b>الإشارة الحالية:</b> {action}
+🔎 <b>الإشارة الحالية:</b> <b>{h.escape(action)}</b>
 🔒 <b>أقصى ثقة تم الوصول إليها:</b> <b>{confidence_percent:.2f}%</b>
 ❌ <b>القرار:</b> لا توجد إشارة قوية ({CONFIDENCE_THRESHOLD_98*100:.0f}%+).
 ━━━━━━━━━━━━━━━
-{price_info_msg}
+{price_info_msg_esc}
 """
          await msg.answer(status_msg, parse_mode="HTML")
     
     else: # في حالة الثقة كانت >= 98%
         rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
-        trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
+        # 💡 تأمين وتحسين تنسيق النوع والحركة
+        trade_type_msg = h.bold("SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING")
+        action_esc = h.bold(h.escape(action))
         
-        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
         status_msg = f"""
 💡 <b>تقرير وضع السوق الحالي - XAUUSD</b>
 ━━━━━━━━━━━━━━━
-🔎 <b>الإشارة المتاحة:</b> {action} ({trade_type})
+🔎 <b>الإشارة المتاحة:</b> <b>{h.escape(action)}</b> ({trade_type})
 🔒 <b>الثقة:</b> <b>{confidence_percent:.2f}%</b>
 ✅ <b>القرار:</b> إشارة قوية جداً (98%+).
 ━━━━━━━━━━━━━━━
-{price_info_msg}
+{price_info_msg_esc}
 
 ⚠️ <b>تفاصيل الصفقة:</b>
-  - <b>ACTION:</b> {action} 
+  - <b>ACTION:</b> {action_esc} 
   - <b>ENTRY:</b> ${entry:,.2f}
   - <b>TP:</b> ${tp:,.2f} | <b>SL:</b> ${sl:,.2f}
   - <b>R/R:</b> 1:{rr_factor_used:.1f}
@@ -1135,6 +1164,11 @@ async def analyze_market_now_enhanced_admin(msg: types.Message):
     if msg.from_user.id != ADMIN_ID: 
         await msg.answer("🚫 هذه الميزة مخصصة للأدمن فقط.")
         return
+    
+    # 🌟 فحص العطلة الأسبوعية
+    if is_weekend_closure():
+        await msg.reply("😴 عذراً، سوق الذهب مغلق حالياً بسبب عطلة نهاية الأسبوع (الجمعة 21:00 UTC إلى الأحد 21:00 UTC).")
+        return
 
     await msg.reply(f"⏳ جارٍ تحليل السوق بحثًا عن أفضل فرصة تداول حالية وعرضها بأي ثقة...")
     
@@ -1144,56 +1178,66 @@ async def analyze_market_now_enhanced_admin(msg: types.Message):
     confidence_percent = confidence * 100
     threshold_percent_90 = int(CONFIDENCE_THRESHOLD_85 * 100) 
     
+    # 💡 تأمين رسالة معلومات السعر
+    price_info_msg_esc = h.escape(price_info_msg)
+    
     # السيناريو 1: فشل حرج 
     if price_info_msg.startswith("❌"):
-        await msg.answer(price_info_msg, parse_mode="HTML")
+        # 💡 تم تأمين الرسالة مسبقاً في الدالة
+        await msg.answer(price_info_msg_esc, parse_mode="HTML") 
         return
         
     # السيناريو 2: إشارة HOLD 
     if action == "HOLD":
-        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
         await msg.answer(f"""
 💡 <b>تقرير التحليل الفوري المُحسَّن - XAUUSD</b>
 ━━━━━━━━━━━━━━━
-🔎 <b>الإشارة الحالية:</b> HOLD (لا يوجد زخم واضح)
+🔎 <b>الإشارة الحالية:</b> <b>HOLD</b> (لا يوجد زخم واضح)
 🔒 <b>الثقة:</b> <b>{confidence_percent:.2f}%</b>
 ❌ <b>القرار:</b> لا توجد إشارة تستوفي شروط الدخول الأولية (EMA Crossover).
 ━━━━━━━━━━━━━━━
-{price_info_msg}
+{price_info_msg_esc}
 """, parse_mode="HTML")
         return
         
     # السيناريو 3: تم العثور على إشارة
     if action != "HOLD":
          rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
-         trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
+         trade_type_msg = h.bold("SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING")
          
          # نحدد ما إذا كانت الثقة كافية للإرسال التلقائي
          auto_send_status = ""
          if confidence >= CONFIDENCE_THRESHOLD_98:
-             # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+             # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML 
              auto_send_status = "🏆 <b>(جاهزة للإرسال التلقائي 98%+!)</b>"
          elif confidence >= CONFIDENCE_THRESHOLD_85: 
              auto_send_status = "✅ <b>(جاهزة للإرسال التلقائي 90%+)</b>"
          else:
              auto_send_status = "⚠️ <b>(غير كافية للإرسال التلقائي)</b> - للعرض اليدوي فقط."
              
-         # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+         # 💡 تأمين جميع المتغيرات الديناميكية
+         action_esc = h.bold(h.escape(action))
+         entry_esc = h.bold(f"${entry:,.2f}")
+         tp_esc = h.bold(f"${tp:,.2f}")
+         sl_esc = h.bold(f"${sl:,.2f}")
+
+         # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
          trade_msg = f"""
 💡 <b>تقرير التحليل الفوري المُحسَّن - XAUUSD</b>
 {auto_send_status}
-🚨 TRADE TYPE: <b>{trade_type_msg}</b> 🚨
+🚨 TRADE TYPE: {trade_type_msg} 🚨
 {('🟢' if action == 'BUY' else '🔴')} <b>ALPHA TRADE SIGNAL ({confidence_percent:.2f}%)</b> {('🟢' if action == 'BUY' else '🔴')}
 ━━━━━━━━━━━━━━━
 📈 <b>PAIR:</b> XAUUSD 
-🔥 <b>ACTION:</b> {action}
-💰 <b>ENTRY:</b> ${entry:,.2f}
-🎯 <b>TAKE PROFIT (TP):</b> ${tp:,.2f}
-🛑 <b>STOP LOSS (SL):</b> ${sl:,.2f}
+🔥 <b>ACTION:</b> {action_esc}
+💰 <b>ENTRY:</b> {entry_esc}
+🎯 <b>TAKE PROFIT (TP):</b> {tp_esc}
+🛑 <b>STOP LOSS (SL):</b> {sl_esc}
 🔒 <b>SUCCESS RATE:</b> <b>{confidence_percent:.2f}%</b> (المطلوب لـ 90%: {threshold_percent_90}%)
 ⚖️ <b>RISK/REWARD:</b> 1:{rr_factor_used:.1f} (SL/TP)
 ━━━━━━━━━━━━━━━
-{price_info_msg}
+{price_info_msg_esc}
 """
          await msg.answer(trade_msg, parse_mode="HTML")
 # ----------------------------------------------------------------------------------
@@ -1210,6 +1254,11 @@ async def daily_inventory_report(msg: types.Message):
 
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
+    # 🌟 فحص العطلة الأسبوعية
+    if is_weekend_closure():
+        await msg.reply("😴 عذراً، سوق الذهب مغلق حالياً بسبب عطلة نهاية الأسبوع (الجمعة 21:00 UTC إلى الأحد 21:00 UTC).")
+        return
+        
     current_price = fetch_current_price_ccxt(TRADE_SYMBOL) 
     
     DISPLAY_SYMBOL = "XAUUSD" 
@@ -1223,13 +1272,18 @@ async def get_current_price(msg: types.Message):
 @dp.message(F.text == "🔍 الصفقات النشطة")
 async def show_active_trades(msg: types.Message):
     
+    # 🌟 فحص العطلة الأسبوعية
+    if is_weekend_closure():
+        await msg.reply("😴 سوق الذهب مغلق حالياً. لا توجد صفقات نشطة للتداول.")
+        return
+        
     active_trades = get_active_trades()
     
     if not active_trades:
         await msg.reply("✅ لا توجد حاليًا أي صفقات VIP نشطة. انتظر إشارة قادمة!")
         return
     
-    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
     report = "⏳ <b>قائمة الصفقات النشطة حالياً (XAUUSD)</b>\n━━━━━━━━━━━━━━━"
     
     for trade in active_trades:
@@ -1278,7 +1332,7 @@ async def process_key_activation(msg: types.Message, state: FSMContext):
 
 @dp.message(F.text == "💰 خطة الأسعار VIP")
 async def show_prices(msg: types.Message):
-    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML 
     prices_msg = f"""
 🌟 <b>مفتاحك للنجاح يبدأ هنا! 🔑</b>
 
@@ -1321,7 +1375,7 @@ async def about_bot(msg: types.Message):
     threshold_98_percent = int(CONFIDENCE_THRESHOLD_98 * 100)
     threshold_90_percent = int(CONFIDENCE_THRESHOLD_85 * 100) 
 
-    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
     about_msg = f"""
 🚀 <b>AlphaTradeAI: ثورة التحليل الكمّي في تداول الذهب!</b> 🚀
 
@@ -1359,7 +1413,7 @@ async def back_to_user_menu(msg: types.Message):
 async def count_users(msg: types.Message):
     if msg.from_user.id != ADMIN_ID:
         return
-    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML 
     total = get_total_users()
     await msg.reply(f"📊 إجمالي عدد المستخدمين المسجلين في قاعدة البيانات: <b>{total}</b>")
 
@@ -1432,7 +1486,7 @@ async def send_broadcast(msg: types.Message, state: FSMContext):
                     pass 
                 
     target_msg = "لجميع المستخدمين غير المحظورين" if broadcast_target == 'all' else "للمشتركين VIP فقط"
-    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+    # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
     await msg.reply(f"✅ تم إرسال الرسالة بنجاح إلى <b>{sent_count}</b> مستخدم ({target_msg}).", reply_markup=admin_menu())
 
 # ----------------------------------------------------------------------------------
@@ -1451,7 +1505,7 @@ async def process_ban(msg: types.Message, state: FSMContext):
     try:
         user_id_to_ban = int(msg.text.strip())
         update_ban_status(user_id_to_ban, 1) 
-        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
         await msg.reply(f"✅ تم حظر المستخدم <b>{user_id_to_ban}</b> بنجاح.", reply_markup=admin_menu())
     except ValueError:
         await msg.reply("❌ ID المستخدم غير صحيح. يرجى إدخال رقم.", reply_markup=admin_menu())
@@ -1470,7 +1524,7 @@ async def process_unban(msg: types.Message, state: FSMContext):
     try:
         user_id_to_unban = int(msg.text.strip())
         update_ban_status(user_id_to_unban, 0) 
-        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
         await msg.reply(f"✅ تم إلغاء حظر المستخدم <b>{user_id_to_unban}</b> بنجاح.", reply_markup=admin_menu())
     except ValueError:
         await msg.reply("❌ ID المستخدم غير صحيح. يرجى إدخال رقم.", reply_markup=admin_menu())
@@ -1494,7 +1548,7 @@ async def process_create_key(msg: types.Message, state: FSMContext):
         
         await state.clear()
         
-        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
         key_msg = f"""
 🎉 تم إنشاء مفتاح تفعيل جديد!
 ━━━━━━━━━━━━━━━
@@ -1560,15 +1614,15 @@ async def check_open_trades():
             closed_count += 1
             
             result_emoji = "🏆🎉" if exit_status == "HIT_TP" else "🛑"
-            trade_type_msg = "SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING"
+            trade_type_msg = h.bold("SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING")
             
-            # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML (استبدال ** بـ <b>)
+            # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
             close_msg = f"""
-🚨 TRADE TYPE: <b>{trade_type_msg}</b> 🚨
+🚨 TRADE TYPE: {trade_type_msg} 🚨
 {result_emoji} <b>TRADE CLOSED!</b> {result_emoji}
 ━━━━━━━━━━━━━━━
 📈 <b>PAIR:</b> XAUUSD 
-➡️ <b>ACTION:</b> {action}
+➡️ <b>ACTION:</b> <b>{h.escape(action)}</b>
 🔒 <b>RESULT:</b> تم الإغلاق عند <b>{exit_status.replace('HIT_', '')}</b>!
 💰 <b>PRICE:</b> ${float(close_price):,.2f}
 """
@@ -1587,20 +1641,12 @@ async def check_open_trades():
 # === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
 # ===============================================
 
-def is_weekend_closure():
-    """التحقق مما إذا كان إغلاق عطلة نهاية الأسبوع (لتجنب التنبيهات)."""
-    now_utc = datetime.now(timezone.utc) 
-    weekday = now_utc.weekday() 
-    
-    if weekday == 5 or (weekday == 6 and now_utc.hour < 21) or (weekday == 4 and now_utc.hour >= 21): 
-        return True
-    return False 
-
 async def scheduled_tasks_checker():
     """مهمة متابعة إغلاق الصفقات فقط (كل 30 ثانية)."""
     await asyncio.sleep(5) 
     while True:
-        await check_open_trades()
+        # ⚠️ ملاحظة: متابعة إغلاق الصفقات تستمر حتى في عطلة نهاية الأسبوع
+        await check_open_trades() 
         await asyncio.sleep(TRADE_CHECK_INTERVAL)
 
 async def trade_monitoring_98_percent():
@@ -1609,6 +1655,8 @@ async def trade_monitoring_98_percent():
     while True:
         if not is_weekend_closure():
             await send_auto_trade_signal(CONFIDENCE_THRESHOLD_98)
+        else:
+            print("😴 عطلة نهاية الأسبوع: تم تخطي التحليل التلقائي 98%.")
         
         await asyncio.sleep(TRADE_ANALYSIS_INTERVAL_98)
 
@@ -1618,15 +1666,21 @@ async def trade_monitoring_85_percent():
     while True:
         if not is_weekend_closure():
             await send_auto_trade_signal(CONFIDENCE_THRESHOLD_85) 
+        else:
+            print("😴 عطلة نهاية الأسبوع: تم تخطي التحليل التلقائي 90%.")
         
         await asyncio.sleep(TRADE_ANALYSIS_INTERVAL_85)
         
 async def periodic_vip_alert():
-    """مهمة إرسال رسائل النشاط الدوري لـ VIP (كل 3 ساعات)."""
+    """مهمة إرسال رسائل النشاط الدوري لـ VIP (كل 6 ساعات)، وتتوقف في العطلة."""
     await asyncio.sleep(120) 
     while True:
-        await send_periodic_activity_message()
-        await asyncio.sleep(ACTIVITY_ALERT_INTERVAL)
+        if not is_weekend_closure():
+            await send_periodic_activity_message()
+        else:
+             print(f"😴 عطلة نهاية الأسبوع: تم تخطي رسالة النشاط الدوري.")
+             
+        await asyncio.sleep(ACTIVITY_ALERT_INTERVAL) # الانتظار لـ 6 ساعات (تم التعديل)
 
 
 async def main():
@@ -1643,7 +1697,7 @@ async def main():
     # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (90% - كل 3 دقائق)
     asyncio.create_task(trade_monitoring_85_percent())
     
-    # 🌟 مهمة رسائل النشاط الدوري (كل 3 ساعات)
+    # 🌟 مهمة رسائل النشاط الدوري (كل 6 ساعات، مع فحص السوق)
     asyncio.create_task(periodic_vip_alert())
     
     await dp.start_polling(bot)
