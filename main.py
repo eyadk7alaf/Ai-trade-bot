@@ -1,4 +1,4 @@
-import asyncio
+Import asyncio
 import time
 import os
 import psycopg2
@@ -47,16 +47,16 @@ CONFIDENCE_THRESHOLD_85 = float(os.getenv("CONFIDENCE_THRESHOLD_85", "0.85"))
 
 # ⚠️ متغيرات الجدولة **المُعدَّلة** (للفحص كل 3 دقائق)
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30"))             
-TRADE_ANALYSIS_INTERVAL_98 = 180                                           # 💡 تم التعديل: 180 ثانية = 3 دقائق
-TRADE_ANALYSIS_INTERVAL_85 = 180                                           # 💡 تم التعديل: 180 ثانية = 3 دقائق
+TRADE_ANALYSIS_INTERVAL_98 = 180                                           
+TRADE_ANALYSIS_INTERVAL_85 = 180                                           
 ACTIVITY_ALERT_INTERVAL = 3 * 3600                                             
 
 # 🌟🌟🌟 المتغيرات **المُعدَّلة** للمخاطرة المنخفضة (Less Risk) 🌟🌟🌟
-SL_FACTOR = 3.0           # 💡 تم التعديل: من 1.5 إلى 3.0 (لتوسيع SL)
-SCALPING_RR_FACTOR = 1.5  # 💡 تم التعديل: من 2.0 إلى 1.5 (لتقريب TP)
+SL_FACTOR = 3.0           
+SCALPING_RR_FACTOR = 1.5  
 LONGTERM_RR_FACTOR = 3.0  
-MAX_SL_DISTANCE = 15.0    # 💡 تم التعديل: من 10.0 إلى 15.0 (لرفع الحد الأقصى)
-MIN_SL_DISTANCE = 1.5     # 💡 **تمت إضافة المتغير المفقود (الحد الأدنى للـ SL)**
+MAX_SL_DISTANCE = 15.0    
+MIN_SL_DISTANCE = 1.5     
 
 # ⚠️ فلاتر ADX الجديدة 
 ADX_SCALPING_MIN = 15 
@@ -115,7 +115,6 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username VARCHAR(255), joined_at DOUBLE PRECISION, is_banned INTEGER DEFAULT 0, vip_until DOUBLE PRECISION DEFAULT 0.0);
         CREATE TABLE IF NOT EXISTS invite_keys (key VARCHAR(255) PRIMARY KEY, days INTEGER, created_by BIGINT, used_by BIGINT NULL, used_at DOUBLE PRECISION NULL);
         CREATE TABLE IF NOT EXISTS trades (trade_id TEXT PRIMARY KEY, sent_at DOUBLE PRECISION, action VARCHAR(10), entry_price DOUBLE PRECISION, take_profit DOUBLE PRECISION, stop_loss DOUBLE PRECISION, status VARCHAR(50) DEFAULT 'ACTIVE', exit_status VARCHAR(50) DEFAULT 'NONE', close_price DOUBLE PRECISION NULL, user_count INTEGER, trade_type VARCHAR(50) DEFAULT 'SCALPING');
-        -- الجدول الجديد لتسجيل الصفقات التلقائية
         CREATE TABLE IF NOT EXISTS auto_trades_log (
             id SERIAL PRIMARY KEY,
             trade_id TEXT NOT NULL,
@@ -127,13 +126,13 @@ def init_db():
     """)
     conn.commit()
     
-    # 2. Migration Fix (لإضافة العمود في حال عدم وجوده)
+    # 2. Migration Fix (لإضافة العمود trade_type في حال عدم وجوده)
     try:
-        cursor.execute("ALTER TABLE trades ADD COLUMN trade_type VARCHAR(50) DEFAULT 'SCALPING'")
+        # 💡 التعديل الموصى به: استخدام IF NOT EXISTS لمنع ظهور رسالة الخطأ المتكررة في السجلات
+        cursor.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS trade_type VARCHAR(50) DEFAULT 'SCALPING'")
         conn.commit()
-    except psycopg2.errors.DuplicateColumn:
-        conn.rollback() 
     except Exception:
+        # يتم استخدام Rollback فقط إذا كان هناك خطأ غير متوقع
         conn.rollback()
         
     conn.close()
@@ -587,7 +586,7 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
     
     try:
         # جلب البيانات لجميع الأطر الزمنية المطلوبة
-        data_3m = fetch_ohlcv_data(symbol, "3m", limit=200)   # 💡 **تم استبدال 1m بـ 3m للسكالبينج**
+        data_3m = fetch_ohlcv_data(symbol, "3m", limit=200)   
         data_5m = fetch_ohlcv_data(symbol, "5m", limit=200)
         data_15m = fetch_ohlcv_data(symbol, "15m", limit=200)
         data_30m = fetch_ohlcv_data(symbol, "30m", limit=200)
@@ -603,11 +602,11 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
         
         if current_spot_price is None:
             # ⚠️ التأكد من تحويل قيمة NumPy إلى float قياسي
-            current_spot_price = float(data_3m['Close'].iloc[-1]) # 💡 **تم تعديل المصدر إلى data_3m**
+            current_spot_price = float(data_3m['Close'].iloc[-1]) 
             price_source = f"تحليل ({CCXT_EXCHANGE})" 
             
         entry_price = current_spot_price 
-        latest_time = data_3m.index[-1].strftime('%Y-%m-%d %H:%M:%S') # 💡 **تم تعديل المصدر إلى data_3m**
+        latest_time = data_3m.index[-1].strftime('%Y-%m-%d %H:%M:%S') 
 
         # === حساب المؤشرات على 3m (كانت 1m) 
         data_3m['EMA_5'] = data_3m['Close'].ewm(span=5, adjust=False).mean()
@@ -629,8 +628,7 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
         current_atr = float(data_3m['ATR'].iloc[-1])
         current_rsi = float(data_3m['RSI'].iloc[-1])
         
-        MIN_ATR_THRESHOLD = 1.2  # 💡 تم رفعه ليناسب الـ 3m (اختياري)
-        # ⚠️ MIN_SL_DISTANCE أصبح الآن متغير عام (Global)
+        MIN_ATR_THRESHOLD = 1.2  
         
         if current_atr < MIN_ATR_THRESHOLD:
             # حالة هدوء السوق
@@ -767,10 +765,10 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
         passed_filters_sc = 0
             
         # الشرط الأولي (كروس أوفر على 3m)
-        ema_fast_prev = data_3m['EMA_5'].iloc[-2] # 💡 كان data_1m
-        ema_slow_prev = data_3m['EMA_20'].iloc[-2] # 💡 كان data_1m
-        ema_fast_current = data_3m['EMA_5'].iloc[-1] # 💡 كان data_1m
-        ema_slow_current = data_3m['EMA_20'].iloc[-1] # 💡 كان data_1m
+        ema_fast_prev = data_3m['EMA_5'].iloc[-2] 
+        ema_slow_prev = data_3m['EMA_20'].iloc[-2] 
+        ema_fast_current = data_3m['EMA_5'].iloc[-1] 
+        ema_slow_current = data_3m['EMA_20'].iloc[-1] 
             
         is_buy_signal_1m = (ema_fast_prev <= ema_slow_prev and ema_fast_current > ema_slow_current)
         is_sell_signal_1m = (ema_fast_prev >= ema_slow_prev and ema_fast_current < ema_slow_current)
@@ -862,8 +860,6 @@ async def send_auto_trade_signal(confidence_target: float):
     threshold = confidence_target
     threshold_percent = int(threshold * 100)
     
-    # 🚨🚨🚨 تم إزالة شرط الصفقات النشطة لضمان الإرسال 🚨🚨🚨
-
     print(f"🔎 بدأ البحث التلقائي عن صفقات {threshold_percent}%...")
     
     try:
@@ -1353,7 +1349,7 @@ async def prompt_broadcast_target(msg: types.Message, state: FSMContext):
     
     await msg.reply(
         "من هو الجمهور الذي تريد إرسال الرسالة إليه؟", 
-        reply_markup=broadcast_target_keyboard() # 💡 الاستدعاء الصحيح للدالة المُعدَّلة
+        reply_markup=broadcast_target_keyboard() 
     )
 
 # 2. معالجة اختيار الجمهور
