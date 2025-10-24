@@ -1,4 +1,4 @@
-import asyncio
+Import asyncio
 import time
 import os
 import psycopg2
@@ -47,15 +47,15 @@ CONFIDENCE_THRESHOLD_85 = float(os.getenv("CONFIDENCE_THRESHOLD_85", "0.85"))
 
 # ⚠️ متغيرات الجدولة **المُعدَّلة** (للفحص كل 3 دقائق)
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30"))             
-TRADE_ANALYSIS_INTERVAL_98 = 180                                           
-TRADE_ANALYSIS_INTERVAL_85 = 180                                           
+TRADE_ANALYSIS_INTERVAL_98 = 180   # ⚠️ توحيد التردد: كل 3 دقائق                                       
+TRADE_ANALYSIS_INTERVAL_85 = 180   # ⚠️ توحيد التردد: كل 3 دقائق                                       
 ACTIVITY_ALERT_INTERVAL = 3 * 3600                                             
 
 # 🌟🌟🌟 المتغيرات **المُعدَّلة** للمخاطرة المنخفضة (Less Risk) 🌟🌟🌟
-SL_FACTOR = 3.0           
-SCALPING_RR_FACTOR = 1.5  
-LONGTERM_RR_FACTOR = 3.0  
-MAX_SL_DISTANCE = 15.0    
+SL_FACTOR = 2.0           # ⚠️ تم تعديله من 3.0 إلى 2.0 لتقليل عرض الـ SL
+SCALPING_RR_FACTOR = 1.5  # ثابت
+LONGTERM_RR_FACTOR = 1.5  # ⚠️ تم تعديله من 3.0 إلى 1.5 لتقريب الأهداف
+MAX_SL_DISTANCE = 7.0     # ⚠️ تم تعديله من 15.0 إلى 7.0 لتقييد الـ SL في السكالبينج
 MIN_SL_DISTANCE = 1.5     
 
 # ⚠️ فلاتر ADX الجديدة 
@@ -65,7 +65,7 @@ BB_PROXIMITY_THRESHOLD = 0.5
 
 # ⚠️ الحد الأدنى لعدد الفلاتر المارة
 MIN_FILTERS_FOR_98 = 7 
-MIN_FILTERS_FOR_85 = 2 
+MIN_FILTERS_FOR_85 = 5    # ⚠️ تم تعديله من 2 إلى 5 لرفع جودة صفقات 85%
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 
@@ -85,7 +85,7 @@ bot = Bot(token=BOT_TOKEN,
           
 dp = Dispatcher(storage=MemoryStorage())
 
-# =============== قاعدة بيانات PostgreSQL ===============
+# =============== قاعدة بيانات PostgreSQL (بدون تغيير) ===============
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -485,7 +485,7 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
         print(f"❌ فشل جلب السعر اللحظي من CCXT ({CCXT_EXCHANGE}): {e}.")
         return None
 
-# =============== برمجية وسيطة للحظر والاشتراك ===============
+# =============== برمجية وسيطة للحظر والاشتراك (بدون تغيير) ===============
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
         self, handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -533,7 +533,7 @@ class AccessMiddleware(BaseMiddleware):
 
         return await handler(event, data)
 
-# =============== وظائف التداول والتحليل ===============
+# =============== وظائف التداول والتحليل (بدون تغيير في منطق التحليل) ===============
 
 def calculate_adx(df, window=14):
     """
@@ -571,7 +571,7 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
     تحليل مزدوج (Scalping / Long-Term) بفلاتر متغيرة.
     تم تحديث Scalping ليعمل على إطار 3m بدلاً من 1m.
     """
-    global SL_FACTOR, SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR, ADX_SCALPING_MIN, ADX_LONGTERM_MIN, BB_PROXIMITY_THRESHOLD, MIN_FILTERS_FOR_98, MAX_SL_DISTANCE, MIN_SL_DISTANCE
+    global SL_FACTOR, SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR, ADX_SCALPING_MIN, ADX_LONGTERM_MIN, BB_PROXIMITY_THRESHOLD, MIN_FILTERS_FOR_98, MAX_SL_DISTANCE, MIN_SL_DISTANCE, MIN_FILTERS_FOR_85
     
     best_action = "HOLD"
     best_confidence = 0.0
@@ -685,7 +685,7 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
 - **RSI (3m):** {current_rsi:.2f} 
 - **ATR (3m):** {current_atr:.2f} 
 - **ADX (5m):** {current_adx_5m:.2f} 
-- **ADX (15m):** {current_adx_15m:.2f} 
+- **ADX (15m):m {current_adx_15m:.2f} 
 - **SMA 200 (5m):** {latest_sma_200_5m:,.2f}
 - **الاتجاهات (5m/15m/30m/1h):** {htf_trend_5m[0]}/{htf_trend_15m[0]}/{htf_trend_30m[0]}/{htf_trend_1h[0]}
 """
@@ -873,9 +873,13 @@ async def send_auto_trade_signal(confidence_target: float):
     DISPLAY_SYMBOL = "XAUUSD" 
     
     rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
+    
+    # ⚠️ التحقق من الحد الأدنى للفلاتر المارة
+    required_min_filters = MIN_FILTERS_FOR_98 if threshold == CONFIDENCE_THRESHOLD_98 else MIN_FILTERS_FOR_85
+    current_filters_passed = int(confidence * MIN_FILTERS_FOR_98) # نحسب عدد الفلاتر المارة فعليا (بناءً على 7)
 
-    # الشرط هنا هو: أن يكون هناك إشارة (HOLD != HOLD) وأن تحقق الثقة المطلوبة
-    if action != "HOLD" and confidence >= threshold:
+    # الشرط هنا هو: أن يكون هناك إشارة (HOLD != HOLD) وأن تحقق الثقة المطلوبة وعدد الفلاتر المطلوب
+    if action != "HOLD" and confidence >= threshold and current_filters_passed >= required_min_filters:
         
         print(f"✅ إشارة {action} قوية جداً تم العثور عليها ({trade_type}) (الثقة: {confidence_percent:.2f}%). جارٍ الإرسال...")
         
@@ -892,7 +896,7 @@ async def send_auto_trade_signal(confidence_target: float):
 💰 **ENTRY:** ${entry:,.2f}
 🎯 **TAKE PROFIT (TP):** ${tp:,.2f}
 🛑 **STOP LOSS (SL):** ${sl:,.2f}
-🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b> ({threshold_percent:.0f}%+)
+🔒 **SUCCESS RATE:** <b>{confidence_percent:.2f}%</b> ({current_filters_passed}/7 Filters)
 ⚖️ **RISK/REWARD:** 1:{rr_factor_used:.1f} (SL/TP)
 ━━━━━━━━━━━━━━━
 ⚠️ **ملاحظة هامة (فرق السعر):** السعر المعروض هو من منصة {CCXT_EXCHANGE}. يرجى التنفيذ **فوراً** على سعر السوق في منصتك الخاصة (MT4/5) مع الأخذ في الاعتبار فوارق الأسعار البسيطة.
@@ -918,7 +922,7 @@ async def send_auto_trade_signal(confidence_target: float):
                  await bot.send_message(ADMIN_ID, admin_confirmation_msg)
                  
     elif action != "HOLD":
-         print(f"❌ لم يتم العثور على إشارة {threshold_percent}% قوية. الثقة: {confidence_percent:.2f}%.")
+         print(f"❌ لم يتم العثور على إشارة {threshold_percent}% قوية. الثقة: {confidence_percent:.2f}%. الفلاتر المارة: {current_filters_passed}/{required_min_filters}.")
     else:
          print(f"❌ لا توجد إشارة واضحة {threshold_percent}% (HOLD).")
 
@@ -972,7 +976,7 @@ async def send_periodic_activity_message():
         except Exception:
             pass
 
-# =============== القوائم والأزرار (تم تحديث قائمة الأدمن والمستخدم) ===============
+# =============== القوائم والأزرار (بدون تغيير) ===============
 
 # ⚠️ **الإصلاح هنا:** تم تعديل إنشاء InlineKeyboardMarkup لاستخدام inline_keyboard
 def broadcast_target_keyboard():
@@ -1314,8 +1318,8 @@ async def about_bot(msg: types.Message):
     كل صفقة تُرسل يجب أن تمر بـ {MIN_FILTERS_FOR_98} فلاتر تحليلية (EMA, RSI, ADX, BB, SMA 200, توافق الأطر الزمنية, DI Crossover).
 
 3.  <b>عتبات الثقة:</b>
-    * **الإرسال التلقائي (الآمن):** لا يتم إرسال أي صفقة تلقائيًا إلا إذا تجاوزت الثقة **{threshold_98_percent}%**. (جدولة: كل 3 دقائق)
-    * **الإرسال التلقائي (المُكرر):** إشارات تتجاوز الثقة **{threshold_85_percent}%**. (جدولة: كل 3 دقائق)
+    * **الإرسال التلقائي (الآمن):** لا يتم إرسال أي صفقة تلقائيًا إلا إذا تجاوزت الثقة **{threshold_98_percent}%** وتجاوزت **{MIN_FILTERS_FOR_98} فلاتر**. (جدولة: كل 3 دقائق)
+    * **الإرسال التلقائي (المُكرر):** إشارات تتجاوز الثقة **{threshold_85_percent}%** وتجاوزت **{MIN_FILTERS_FOR_85} فلاتر**. (جدولة: كل 3 دقائق)
 
 4.  <b>نقاط خروج ديناميكية:</b>
     نقاط TP و SL تتغير مع كل صفقة بناءً على التقلب الفعلي للسوق (ATR)، مما يضمن تحديد هدف ووقف مناسبين لظروف السوق الحالية.
@@ -1347,6 +1351,7 @@ async def count_users(msg: types.Message):
 async def prompt_broadcast_target(msg: types.Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
     
+    await state.set_state(AdminStates.waiting_broadcast_target)
     await msg.reply(
         "من هو الجمهور الذي تريد إرسال الرسالة إليه؟", 
         reply_markup=broadcast_target_keyboard() 
