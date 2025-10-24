@@ -7,7 +7,7 @@ import schedule
 import random
 import uuid
 import ccxt 
-import numpy as np # تم إضافة NumPy للاستخدام الآمن
+import numpy as np 
 
 from datetime import datetime, timedelta, timezone 
 from urllib.parse import urlparse
@@ -45,17 +45,18 @@ REQUIRED_MANUAL_CONFIDENCE = float(os.getenv("REQUIRED_MANUAL_CONFIDENCE", "0.85
 CONFIDENCE_THRESHOLD_98 = float(os.getenv("CONFIDENCE_THRESHOLD_98", "0.98")) 
 CONFIDENCE_THRESHOLD_85 = float(os.getenv("CONFIDENCE_THRESHOLD_85", "0.85")) 
 
-# ⚠️ متغيرات الجدولة الجديدة
+# ⚠️ متغيرات الجدولة **المُعدَّلة** (للفحص كل 3 دقائق)
 TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30"))             
-TRADE_ANALYSIS_INTERVAL_98 = 10 * 60                                           
-TRADE_ANALYSIS_INTERVAL_85 = 15 * 60                                           
+TRADE_ANALYSIS_INTERVAL_98 = 180                                           # 💡 تم التعديل: 180 ثانية = 3 دقائق
+TRADE_ANALYSIS_INTERVAL_85 = 180                                           # 💡 تم التعديل: 180 ثانية = 3 دقائق
 ACTIVITY_ALERT_INTERVAL = 3 * 3600                                             
 
-# 🌟🌟🌟 المتغيرات الجديدة للمخاطرة المنخفضة (Less Risk) 🌟🌟🌟
-SL_FACTOR = 1.5           # تم تقليل مضاعف ATR لوقف الخسارة 
-SCALPING_RR_FACTOR = 2.0  # تم تقليل الهدف للسكالبينج (R:R 1:2)
-LONGTERM_RR_FACTOR = 3.0  # تم تقليل الهدف للمدى الطويل (R:R 1:3)
-MAX_SL_DISTANCE = 10.0    # **إضافة حد أقصى للـ SL بالدولار (Hard Cap)**
+# 🌟🌟🌟 المتغيرات **المُعدَّلة** للمخاطرة المنخفضة (Less Risk) 🌟🌟🌟
+SL_FACTOR = 3.0           # 💡 تم التعديل: من 1.5 إلى 3.0 (لتوسيع SL)
+SCALPING_RR_FACTOR = 1.5  # 💡 تم التعديل: من 2.0 إلى 1.5 (لتقريب TP)
+LONGTERM_RR_FACTOR = 3.0  
+MAX_SL_DISTANCE = 15.0    # 💡 تم التعديل: من 10.0 إلى 15.0 (لرفع الحد الأقصى)
+MIN_SL_DISTANCE = 1.5     # 💡 **تمت إضافة المتغير المفقود (الحد الأدنى للـ SL)**
 
 # ⚠️ فلاتر ADX الجديدة 
 ADX_SCALPING_MIN = 15 
@@ -569,9 +570,9 @@ def calculate_adx(df, window=14):
 def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, float, str, float, float, float, float, str]:
     """
     تحليل مزدوج (Scalping / Long-Term) بفلاتر متغيرة.
-    is_admin_manual: True عند الضغط على زر "💡 هات أفضل إشارة الآن 📊"
+    تم تحديث Scalping ليعمل على إطار 3m بدلاً من 1m.
     """
-    global SL_FACTOR, SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR, ADX_SCALPING_MIN, ADX_LONGTERM_MIN, BB_PROXIMITY_THRESHOLD, MIN_FILTERS_FOR_98, MAX_SL_DISTANCE
+    global SL_FACTOR, SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR, ADX_SCALPING_MIN, ADX_LONGTERM_MIN, BB_PROXIMITY_THRESHOLD, MIN_FILTERS_FOR_98, MAX_SL_DISTANCE, MIN_SL_DISTANCE
     
     best_action = "HOLD"
     best_confidence = 0.0
@@ -586,14 +587,14 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
     
     try:
         # جلب البيانات لجميع الأطر الزمنية المطلوبة
-        data_1m = fetch_ohlcv_data(symbol, "1m", limit=200)
+        data_3m = fetch_ohlcv_data(symbol, "3m", limit=200)   # 💡 **تم استبدال 1m بـ 3m للسكالبينج**
         data_5m = fetch_ohlcv_data(symbol, "5m", limit=200)
         data_15m = fetch_ohlcv_data(symbol, "15m", limit=200)
         data_30m = fetch_ohlcv_data(symbol, "30m", limit=200)
         data_1h = fetch_ohlcv_data(symbol, "1h", limit=200) 
         
         # ************** شرط البيانات الكافية **************
-        if data_1m.empty or data_5m.empty or data_15m.empty or data_30m.empty or data_1h.empty: 
+        if data_3m.empty or data_5m.empty or data_15m.empty or data_30m.empty or data_1h.empty: 
             return f"❌ لا تتوفر بيانات كافية للتحليل لرمز التداول: {DISPLAY_SYMBOL}.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
 
         # ************** جلب السعر اللحظي **************
@@ -602,34 +603,34 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
         
         if current_spot_price is None:
             # ⚠️ التأكد من تحويل قيمة NumPy إلى float قياسي
-            current_spot_price = float(data_1m['Close'].iloc[-1])
+            current_spot_price = float(data_3m['Close'].iloc[-1]) # 💡 **تم تعديل المصدر إلى data_3m**
             price_source = f"تحليل ({CCXT_EXCHANGE})" 
             
         entry_price = current_spot_price 
-        latest_time = data_1m.index[-1].strftime('%Y-%m-%d %H:%M:%S')
+        latest_time = data_3m.index[-1].strftime('%Y-%m-%d %H:%M:%S') # 💡 **تم تعديل المصدر إلى data_3m**
 
-        # === حساب المؤشرات على 1m 
-        data_1m['EMA_5'] = data_1m['Close'].ewm(span=5, adjust=False).mean()
-        data_1m['EMA_20'] = data_1m['Close'].ewm(span=20, adjust=False).mean()
+        # === حساب المؤشرات على 3m (كانت 1m) 
+        data_3m['EMA_5'] = data_3m['Close'].ewm(span=5, adjust=False).mean()
+        data_3m['EMA_20'] = data_3m['Close'].ewm(span=20, adjust=False).mean()
         
-        delta_1m = data_1m['Close'].diff()
-        gain_1m = delta_1m.where(delta_1m > 0, 0)
-        loss_1m = -delta_1m.where(delta_1m < 0, 0)
-        RS_1m = gain_1m.ewm(com=14-1, min_periods=14, adjust=False).mean() / loss_1m.ewm(com=14-1, min_periods=14, adjust=False).mean().replace(0, 1e-10)
-        data_1m['RSI'] = 100 - (100 / (1 + RS_1m))
+        delta_3m = data_3m['Close'].diff()
+        gain_3m = delta_3m.where(delta_3m > 0, 0)
+        loss_3m = -delta_3m.where(delta_3m < 0, 0)
+        RS_3m = gain_3m.ewm(com=14-1, min_periods=14, adjust=False).mean() / loss_3m.ewm(com=14-1, min_periods=14, adjust=False).mean().replace(0, 1e-10)
+        data_3m['RSI'] = 100 - (100 / (1 + RS_3m))
         
-        high_low = data_1m['High'] - data_1m['Low']
-        high_close = (data_1m['High'] - data_1m['Close'].shift()).abs()
-        low_close = (data_1m['Low'] - data_1m['Close'].shift()).abs()
+        high_low = data_3m['High'] - data_3m['Low']
+        high_close = (data_3m['High'] - data_3m['Close'].shift()).abs()
+        low_close = (data_3m['Low'] - data_3m['Close'].shift()).abs()
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        data_1m['ATR'] = tr.rolling(14).mean()
+        data_3m['ATR'] = tr.rolling(14).mean()
         
         # ⚠️ التأكد من تحويل قيمة NumPy إلى float قياسي
-        current_atr = float(data_1m['ATR'].iloc[-1])
-        current_rsi = float(data_1m['RSI'].iloc[-1])
+        current_atr = float(data_3m['ATR'].iloc[-1])
+        current_rsi = float(data_3m['RSI'].iloc[-1])
         
-        MIN_ATR_THRESHOLD = 0.8  # تم رفعه
-        MIN_SL_DISTANCE = 0.7    # تم رفعه
+        MIN_ATR_THRESHOLD = 1.2  # 💡 تم رفعه ليناسب الـ 3m (اختياري)
+        # ⚠️ MIN_SL_DISTANCE أصبح الآن متغير عام (Global)
         
         if current_atr < MIN_ATR_THRESHOLD:
             # حالة هدوء السوق
@@ -683,8 +684,8 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
 السعر: ${entry_price:,.2f} | الوقت: {latest_time} UTC
 
 **تحليل المؤشرات:**
-- **RSI (1m):** {current_rsi:.2f} 
-- **ATR (1m):** {current_atr:.2f} 
+- **RSI (3m):** {current_rsi:.2f} 
+- **ATR (3m):** {current_atr:.2f} 
 - **ADX (5m):** {current_adx_5m:.2f} 
 - **ADX (15m):** {current_adx_15m:.2f} 
 - **SMA 200 (5m):** {latest_sma_200_5m:,.2f}
@@ -743,6 +744,7 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
                 
                 # حساب نقاط الخروج (بالمتغيرات الجديدة)
                 risk_amount_unlimited = current_atr * SL_FACTOR
+                # 💡 **تم تطبيق MIN_SL_DISTANCE و MAX_SL_DISTANCE هنا**
                 risk_amount = max(MIN_SL_DISTANCE, min(risk_amount_unlimited, MAX_SL_DISTANCE))
                 
                 best_sl_distance = risk_amount
@@ -759,22 +761,23 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
         
         # ===============================================
         # === 2. محاولة استخراج إشارة SCALPING (الخيار الثاني) ===
+        # === تعمل الآن على إطار 3m ===
         # ===============================================
         
         passed_filters_sc = 0
             
-        # الشرط الأولي (كروس أوفر على 1m)
-        ema_fast_prev = data_1m['EMA_5'].iloc[-2]
-        ema_slow_prev = data_1m['EMA_20'].iloc[-2]
-        ema_fast_current = data_1m['EMA_5'].iloc[-1]
-        ema_slow_current = data_1m['EMA_20'].iloc[-1]
+        # الشرط الأولي (كروس أوفر على 3m)
+        ema_fast_prev = data_3m['EMA_5'].iloc[-2] # 💡 كان data_1m
+        ema_slow_prev = data_3m['EMA_20'].iloc[-2] # 💡 كان data_1m
+        ema_fast_current = data_3m['EMA_5'].iloc[-1] # 💡 كان data_1m
+        ema_slow_current = data_3m['EMA_20'].iloc[-1] # 💡 كان data_1m
             
         is_buy_signal_1m = (ema_fast_prev <= ema_slow_prev and ema_fast_current > ema_slow_current)
         is_sell_signal_1m = (ema_fast_prev >= ema_slow_prev and ema_fast_current < ema_slow_current)
 
         if is_buy_signal_1m or is_sell_signal_1m: 
                 
-            # فلتر 1: EMA Crossover 1m (EMA)
+            # فلتر 1: EMA Crossover 3m (EMA)
             passed_filters_sc += 1
                 
             # فلتر 2: الاتجاه قوي على 5m (ADX)
@@ -821,6 +824,7 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
                 
                 # حساب نقاط الخروج (بالمتغيرات الجديدة)
                 risk_amount_unlimited = current_atr * SL_FACTOR
+                # 💡 **تم تطبيق MIN_SL_DISTANCE و MAX_SL_DISTANCE هنا**
                 risk_amount = max(MIN_SL_DISTANCE, min(risk_amount_unlimited, MAX_SL_DISTANCE))
                 
                 best_sl_distance = risk_amount
@@ -858,12 +862,7 @@ async def send_auto_trade_signal(confidence_target: float):
     threshold = confidence_target
     threshold_percent = int(threshold * 100)
     
-    # 🚨🚨🚨 الحل لمشكلة عدم الإرسال (تم إزالة شرط الصفقات النشطة) 🚨🚨🚨
-    # active_trades = get_active_trades()
-    # if len(active_trades) > 0:
-    #     print(f"🔎 بدأ البحث التلقائي عن صفقات {threshold_percent}%: يوجد {len(active_trades)} صفقات نشطة. تم تخطي التحليل.")
-    #     return 
-    # ⚠️ ملاحظة: الإزالة تعني أن النظام سيستمر في إرسال الصفقات حتى لو كانت هناك صفقات قديمة لا تزال نشطة.
+    # 🚨🚨🚨 تم إزالة شرط الصفقات النشطة لضمان الإرسال 🚨🚨🚨
 
     print(f"🔎 بدأ البحث التلقائي عن صفقات {threshold_percent}%...")
     
@@ -1311,15 +1310,15 @@ async def about_bot(msg: types.Message):
 🛡️ **ماذا يقدم لك الاشتراك VIP؟ (ميزة القوة الخارقة)**
 1.  <b>إشارات ثنائية الاستراتيجية (Dual Strategy):</b>
     نظامنا يبحث عن نوعين من الصفقات لتغطية جميع ظروف السوق القوية:
-    * **Scalping:** R:R 1:{SCALPING_RR_FACTOR:.1f} مع فلاتر 1m/5m/15m و ADX > {ADX_SCALPING_MIN}.
+    * **Scalping:** R:R 1:{SCALPING_RR_FACTOR:.1f} مع فلاتر 3m/5m/15m و ADX > {ADX_SCALPING_MIN}. 💡 **(محدث إلى 3m)**
     * **Long-Term:** R:R 1:{LONGTERM_RR_FACTOR:.1f} مع فلاتر 15m/30m/1h و ADX > {ADX_LONGTERM_MIN}.
     
 2.  <b>إشارات سداسية التأكيد (7-Tier Confirmation):</b>
     كل صفقة تُرسل يجب أن تمر بـ {MIN_FILTERS_FOR_98} فلاتر تحليلية (EMA, RSI, ADX, BB, SMA 200, توافق الأطر الزمنية, DI Crossover).
 
 3.  <b>عتبات الثقة:</b>
-    * **الإرسال التلقائي (الآمن):** لا يتم إرسال أي صفقة تلقائيًا إلا إذا تجاوزت الثقة **{threshold_98_percent}%**. (جدولة: كل 10 دقائق)
-    * **الإرسال التلقائي (المُكرر):** إشارات تتجاوز الثقة **{threshold_85_percent}%**. (جدولة: كل 15 دقيقة)
+    * **الإرسال التلقائي (الآمن):** لا يتم إرسال أي صفقة تلقائيًا إلا إذا تجاوزت الثقة **{threshold_98_percent}%**. (جدولة: كل 3 دقائق)
+    * **الإرسال التلقائي (المُكرر):** إشارات تتجاوز الثقة **{threshold_85_percent}%**. (جدولة: كل 3 دقائق)
 
 4.  <b>نقاط خروج ديناميكية:</b>
     نقاط TP و SL تتغير مع كل صفقة بناءً على التقلب الفعلي للسوق (ATR)، مما يضمن تحديد هدف ووقف مناسبين لظروف السوق الحالية.
@@ -1569,14 +1568,14 @@ def is_weekend_closure():
     return False 
 
 async def scheduled_tasks_checker():
-    """مهمة متابعة إغلاق الصفقات فقط."""
+    """مهمة متابعة إغلاق الصفقات فقط (كل 30 ثانية)."""
     await asyncio.sleep(5) 
     while True:
         await check_open_trades()
         await asyncio.sleep(TRADE_CHECK_INTERVAL)
 
 async def trade_monitoring_98_percent():
-    """مهمة التحليل المستمر وإرسال الإشارات التلقائية 98% (كل 10 دقائق)."""
+    """مهمة التحليل المستمر وإرسال الإشارات التلقائية 98% (كل 3 دقائق)."""
     await asyncio.sleep(60) 
     while True:
         if not is_weekend_closure():
@@ -1585,7 +1584,7 @@ async def trade_monitoring_98_percent():
         await asyncio.sleep(TRADE_ANALYSIS_INTERVAL_98)
 
 async def trade_monitoring_85_percent():
-    """مهمة التحليل المستمر وإرسال الإشارات التلقائية 85% (كل 15 دقيقة)."""
+    """مهمة التحليل المستمر وإرسال الإشارات التلقائية 85% (كل 3 دقائق)."""
     await asyncio.sleep(30) # ابدأ بعد 30 ثانية
     while True:
         if not is_weekend_closure():
@@ -1609,10 +1608,10 @@ async def main():
     # 🌟 مهمة متابعة الصفقات وإغلاقها
     asyncio.create_task(scheduled_tasks_checker()) 
     
-    # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (98% - كل 10 دقائق)
+    # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (98% - كل 3 دقائق)
     asyncio.create_task(trade_monitoring_98_percent())
     
-    # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (85% - كل 15 دقيقة)
+    # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (85% - كل 3 دقائق)
     asyncio.create_task(trade_monitoring_85_percent())
     
     # 🌟 مهمة رسائل النشاط الدوري (كل 3 ساعات)
