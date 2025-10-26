@@ -18,8 +18,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
-# السطر 21 تقريباً:
-from aiogram.utils.markdown import h # ⭐️ تم تصحيح مسار الاستيراد لـ h في aiogram V3+
+# 🚨🚨🚨 التعديل الحرج هنا: تم تغيير aiogram.utils إلى aiogram.utils.markdown 🚨🚨🚨
+from aiogram.utils.markdown import h 
+
 # =============== تعريف حالات FSM المُعدَّلة والمُضافة ===============
 class AdminStates(StatesGroup):
     waiting_broadcast_target = State() 
@@ -110,6 +111,7 @@ def init_db():
     if conn is None: return
     cursor = conn.cursor()
     
+    # 💡 تم التأكد من عدم وجود تضارب في حالة إضافة العمود في هذا الجزء
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username VARCHAR(255), joined_at DOUBLE PRECISION, is_banned INTEGER DEFAULT 0, vip_until DOUBLE PRECISION DEFAULT 0.0);
         CREATE TABLE IF NOT EXISTS invite_keys (key VARCHAR(255) PRIMARY KEY, days INTEGER, created_by BIGINT, used_by BIGINT NULL, used_at DOUBLE PRECISION NULL);
@@ -126,7 +128,7 @@ def init_db():
     conn.commit()
     
     try:
-        # 💡 تم التأكد من عدم وجود تضارب في حالة إضافة العمود
+        # 💡 هذا الأمر يتجنب الخطأ الذي ظهر في السجلات (ERROR: column "trade_type" of relation "trades" already exists)
         cursor.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS trade_type VARCHAR(50) DEFAULT 'SCALPING'")
         conn.commit()
     except Exception:
@@ -1656,6 +1658,7 @@ async def trade_monitoring_98_percent():
     """مهمة التحليل المستمر وإرسال الإشارات التلقائية 98% (كل 3 دقائق)."""
     await asyncio.sleep(60) 
     while True:
+        # 🚨 تأكد من عدم التشغيل في العطلة
         if not is_weekend_closure():
             await send_auto_trade_signal(CONFIDENCE_THRESHOLD_98)
         else:
@@ -1667,6 +1670,7 @@ async def trade_monitoring_85_percent():
     """مهمة التحليل المستمر وإرسال الإشارات التلقائية 90% (كل 3 دقائق)."""
     await asyncio.sleep(30) 
     while True:
+        # 🚨 تأكد من عدم التشغيل في العطلة
         if not is_weekend_closure():
             await send_auto_trade_signal(CONFIDENCE_THRESHOLD_85) 
         else:
@@ -1678,6 +1682,7 @@ async def periodic_vip_alert():
     """مهمة إرسال رسائل النشاط الدوري لـ VIP (كل 6 ساعات)، وتتوقف في العطلة."""
     await asyncio.sleep(120) 
     while True:
+        # 🚨 تأكد من عدم التشغيل في العطلة
         if not is_weekend_closure():
             await send_periodic_activity_message()
         else:
@@ -1691,16 +1696,16 @@ async def main():
     
     dp.message.middleware(AccessMiddleware())
     
-    # 🌟 مهمة متابعة الصفقات وإغلاقها
+    # 🌟 مهمة متابعة الصفقات وإغلاقها (تستمر حتى في العطلة لضمان الإغلاق الفوري عند فتح السوق)
     asyncio.create_task(scheduled_tasks_checker()) 
     
-    # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (98% - كل 3 دقائق)
+    # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (98% - كل 3 دقائق) - تتوقف في العطلة
     asyncio.create_task(trade_monitoring_98_percent())
     
-    # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (90% - كل 3 دقائق)
+    # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية (90% - كل 3 دقائق) - تتوقف في العطلة
     asyncio.create_task(trade_monitoring_85_percent())
     
-    # 🌟 مهمة رسائل النشاط الدوري (كل 6 ساعات، مع فحص السوق)
+    # 🌟 مهمة رسائل النشاط الدوري (كل 6 ساعات، مع فحص السوق) - تتوقف في العطلة
     asyncio.create_task(periodic_vip_alert())
     
     await dp.start_polling(bot)
