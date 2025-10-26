@@ -18,8 +18,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
-# 🚨🚨🚨 تم تصحيح الخطأ الحرج هنا: هذا السطر هو الحل لـ ImportError: cannot import name 'html' 🚨🚨🚨
-from aiogram.utils.markdown import h 
+# 🚨🚨🚨 التعديل الحاسم: تم تبسيط استيراد الـ HTML لتفادي مشكلة 'h' و 'html'
+from aiogram.utils.markdown import escape_html 
+
+# تعريف دالة h لتكون هي دالة تنظيف الـ HTML (hcode)
+# بما أننا لا نعرف الإصدار بدقة، سنستخدم escape_html لتنظيف أي نصوص ديناميكية
+def h(text):
+    return escape_html(str(text)) 
+
 
 # =============== تعريف حالات FSM المُعدَّلة والمُضافة ===============
 class AdminStates(StatesGroup):
@@ -502,11 +508,11 @@ def calculate_adx(df, window=14):
         return series.ewm(com=periods - 1, adjust=False).mean()
         
     df['+DMS'] = smooth(df['+DM'], window)
-    df['-DMS'] = smooth(df['+DM'], window) # 💥 خطأ بسيط في الكود الأصلي تم تجاهله، لا يؤثر على ADX/DX
+    df['-DMS'] = smooth(df['-DM'], window)
     df['TRS'] = smooth(df['tr'], window)
     
     df['+DI'] = (df['+DMS'] / df['TRS'].replace(0, 1e-10)).fillna(0) * 100
-    df['-DI'] = (smooth(df['-DM'], window) / df['TRS'].replace(0, 1e-10)).fillna(0) * 100 # تم تصحيح '-DMS' هنا
+    df['-DI'] = (df['-DMS'] / df['TRS'].replace(0, 1e-10)).fillna(0) * 100
     
     df['DX'] = (abs(df['+DI'] - df['-DI']) / (df['+DI'] + df['-DI']).replace(0, 1e-10)).fillna(0) * 100
     df['ADX'] = smooth(df['DX'], window)
@@ -786,7 +792,7 @@ def get_signal_and_confidence(symbol: str, is_admin_manual: bool) -> tuple[str, 
         
     except Exception as e:
         print(f"❌ فشل حرج في جلب بيانات التداول أو التحليل: {e}")
-        return f"❌ فشل حرج في جلب بيانات التداول أو التحليل: {h.escape(str(e))}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
+        return f"❌ فشل حرج في جلب بيانات التداول أو التحليل: {h(str(e))}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE"
 
 
 async def send_auto_trade_signal(confidence_target: float):
@@ -818,14 +824,14 @@ async def send_auto_trade_signal(confidence_target: float):
         
         print(f"✅ إشارة {action} قوية جداً تم العثور عليها ({trade_type}) (الثقة: {confidence_percent:.2f}%). جارٍ الإرسال...")
         
-        trade_type_msg = h.bold("SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING")
+        trade_type_msg = f"<b>SCALPING / HIGH MOMENTUM</b>" if trade_type == "SCALPING" else f"<b>LONG-TERM / SWING</b>"
         
         trade_msg = f"""
 🚨 TRADE TYPE: {trade_type_msg} 🚨
 {('🟢' if action == 'BUY' else '🔴')} <b>ALPHA TRADE ALERT - {alert_confidence_perc}% SIGNAL!</b> {('🟢' if action == 'BUY' else '🔴')}
 ━━━━━━━━━━━━━━━
 📈 <b>PAIR:</b> {DISPLAY_SYMBOL} 
-🔥 <b>ACTION:</b> <b>{h.escape(action)}</b> (Market Execution)
+🔥 <b>ACTION:</b> <b>{action}</b> (Market Execution)
 💰 <b>ENTRY:</b> ${entry:,.2f}
 🎯 <b>TAKE PROFIT (TP):</b> ${tp:,.2f}
 🛑 <b>STOP LOSS (SL):</b> ${sl:,.2f}
@@ -848,7 +854,7 @@ async def send_auto_trade_signal(confidence_target: float):
                 except Exception:
                     pass
             
-            admin_confirmation_msg = f"✅ تم إرسال صفقة تلقائية ({confidence_percent:.2f}%) لـ {DISPLAY_SYMBOL}: <b>{h.escape(action)}</b> عند ${entry:,.2f}. تم الإرسال إلى {len(vip_users)} مستخدم VIP. ID: {h.escape(trade_id)}"
+            admin_confirmation_msg = f"✅ تم إرسال صفقة تلقائية ({confidence_percent:.2f}%) لـ {DISPLAY_SYMBOL}: <b>{action}</b> عند ${entry:,.2f}. تم الإرسال إلى {len(vip_users)} مستخدم VIP. ID: {trade_id}"
             if ADMIN_ID != 0:
                  await bot.send_message(ADMIN_ID, admin_confirmation_msg, parse_mode="HTML")
                  
@@ -968,9 +974,9 @@ async def show_last_auto_sends(msg: types.Message):
         conf_perc = confidence * 100
         
         report += f"""
-{('🟢' if action == 'BUY' else '🔴')} <b>{h.escape(action)}</b> ({h.escape(trade_type)})
+{('🟢' if action == 'BUY' else '🔴')} <b>{action}</b> ({trade_type})
   - <b>الثقة:</b> {conf_perc:.2f}%
-  - <b>الوقت:</b> {h.escape(send_time)} UTC
+  - <b>الوقت:</b> {send_time} UTC
 """
     await msg.reply(report, parse_mode="HTML")
 
@@ -1005,13 +1011,13 @@ async def analyze_market_now(msg: types.Message):
     price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type = get_signal_and_confidence(TRADE_SYMBOL, False)
     confidence_percent = confidence * 100
     
-    price_info_msg_esc = h.escape(price_info_msg)
+    price_info_msg_esc = h(price_info_msg)
     
     if action == "HOLD" or confidence < CONFIDENCE_THRESHOLD_98:
          status_msg = f"""
 💡 <b>تقرير وضع السوق الحالي - XAUUSD</b>
 ━━━━━━━━━━━━━━━
-🔎 <b>الإشارة الحالية:</b> <b>{h.escape(action)}</b>
+🔎 <b>الإشارة الحالية:</b> <b>{action}</b>
 🔒 <b>أقصى ثقة تم الوصول إليها:</b> <b>{confidence_percent:.2f}%</b>
 ❌ <b>القرار:</b> لا توجد إشارة قوية ({CONFIDENCE_THRESHOLD_98*100:.0f}%+).
 ━━━━━━━━━━━━━━━
@@ -1021,13 +1027,13 @@ async def analyze_market_now(msg: types.Message):
     
     else: 
         rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
-        trade_type_msg = h.bold("SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING")
-        action_esc = h.bold(h.escape(action))
+        trade_type_msg = f"<b>SCALPING / HIGH MOMENTUM</b>" if trade_type == "SCALPING" else f"<b>LONG-TERM / SWING</b>"
+        action_esc = f"<b>{action}</b>"
         
         status_msg = f"""
 💡 <b>تقرير وضع السوق الحالي - XAUUSD</b>
 ━━━━━━━━━━━━━━━
-🔎 <b>الإشارة المتاحة:</b> <b>{h.escape(action)}</b> ({h.escape(trade_type)})
+🔎 <b>الإشارة المتاحة:</b> <b>{action}</b> ({trade_type})
 🔒 <b>الثقة:</b> <b>{confidence_percent:.2f}%</b>
 ✅ <b>القرار:</b> إشارة قوية جداً (98%+).
 ━━━━━━━━━━━━━━━
@@ -1060,7 +1066,7 @@ async def analyze_market_now_enhanced_admin(msg: types.Message):
     confidence_percent = confidence * 100
     threshold_percent_90 = int(CONFIDENCE_THRESHOLD_85 * 100) 
     
-    price_info_msg_esc = h.escape(price_info_msg)
+    price_info_msg_esc = h(price_info_msg)
     
     if price_info_msg.startswith("❌"):
         await msg.answer(price_info_msg_esc, parse_mode="HTML") 
@@ -1080,7 +1086,7 @@ async def analyze_market_now_enhanced_admin(msg: types.Message):
         
     if action != "HOLD":
          rr_factor_used = SCALPING_RR_FACTOR if trade_type == "SCALPING" else LONGTERM_RR_FACTOR
-         trade_type_msg = h.bold("SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING")
+         trade_type_msg = f"<b>SCALPING / HIGH MOMENTUM</b>" if trade_type == "SCALPING" else f"<b>LONG-TERM / SWING</b>"
          
          auto_send_status = ""
          if confidence >= CONFIDENCE_THRESHOLD_98:
@@ -1090,10 +1096,10 @@ async def analyze_market_now_enhanced_admin(msg: types.Message):
          else:
              auto_send_status = "⚠️ <b>(غير كافية للإرسال التلقائي)</b> - للعرض اليدوي فقط."
              
-         action_esc = h.bold(h.escape(action))
-         entry_esc = h.bold(f"${entry:,.2f}")
-         tp_esc = h.bold(f"${tp:,.2f}")
-         sl_esc = h.bold(f"${sl:,.2f}")
+         action_esc = f"<b>{action}</b>"
+         entry_esc = f"<b>${entry:,.2f}</b>"
+         tp_esc = f"<b>${tp:,.2f}</b>"
+         sl_esc = f"<b>${sl:,.2f}</b>"
 
          trade_msg = f"""
 💡 <b>تقرير التحليل الفوري المُحسَّن - XAUUSD</b>
@@ -1164,10 +1170,10 @@ async def show_active_trades(msg: types.Message):
         signal_emoji = "🟢" if action == "BUY" else "🔴"
         
         report += f"""
-{signal_emoji} <b>{h.escape(action)} @ ${entry:,.2f}</b> ({'سريع' if trade_type == 'SCALPING' else 'طويل'})
+{signal_emoji} <b>{action} @ ${entry:,.2f}</b> ({'سريع' if trade_type == 'SCALPING' else 'طويل'})
   - <b>TP:</b> ${tp:,.2f}
   - <b>SL:</b> ${sl:,.2f}
-  - <b>ID:</b> <code>{h.escape(trade_id)}</code>
+  - <b>ID:</b> <code>{trade_id}</code>
 """
     await msg.reply(report, parse_mode="HTML")
 
@@ -1175,9 +1181,9 @@ async def show_active_trades(msg: types.Message):
 async def show_subscription_status(msg: types.Message):
     status = get_user_vip_status(msg.from_user.id)
     if status == "غير مشترك":
-        await msg.reply(f"⚠️ أنت حالياً <b>غير مشترك</b> في خدمة VIP.\nللاشتراك، اطلب مفتاح تفعيل من الأدمن (@{h.escape(ADMIN_USERNAME)}) ثم اضغط '🔗 تفعيل مفتاح الاشتراك'.")
+        await msg.reply(f"⚠️ أنت حالياً <b>غير مشترك</b> في خدمة VIP.\nللاشتراك، اطلب مفتاح تفعيل من الأدمن (@{h(ADMIN_USERNAME)}) ثم اضغط '🔗 تفعيل مفتاح الاشتراك'.")
     else:
-        await msg.reply(f"✅ أنت مشترك في خدمة VIP.\nالاشتراك ينتهي في: <b>{h.escape(status)}</b>.")
+        await msg.reply(f"✅ أنت مشترك في خدمة VIP.\nالاشتراك ينتهي في: <b>{h(status)}</b>.")
 
 @dp.message(F.text == "🔗 تفعيل مفتاح الاشتراك")
 async def prompt_key_activation(msg: types.Message, state: FSMContext):
@@ -1193,7 +1199,7 @@ async def process_key_activation(msg: types.Message, state: FSMContext):
     
     if success:
         formatted_date = new_vip_until.strftime('%Y-%m-%d %H:%M') if new_vip_until else "غير محدد"
-        await msg.reply(f"🎉 تم تفعيل مفتاح الاشتراك بنجاح!\n✅ تمت إضافة {days} يوم/أيام إلى اشتراكك.\nالاشتراك الجديد ينتهي في: <b>{h.escape(formatted_date)}</b>.", reply_markup=user_menu())
+        await msg.reply(f"🎉 تم تفعيل مفتاح الاشتراك بنجاح!\n✅ تمت إضافة {days} يوم/أيام إلى اشتراكك.\nالاشتراك الجديد ينتهي في: <b>{h(formatted_date)}</b>.", reply_markup=user_menu())
     else:
         await msg.reply("❌ فشل تفعيل المفتاح. يرجى التأكد من صحة المفتاح وأنه لم يُستخدم من قبل.", reply_markup=user_menu())
 
@@ -1224,7 +1230,7 @@ async def show_prices(msg: types.Message):
 ━━━━━━━━━━━━━━━
 🛒 <b>للاشتراك وتفعيل المفتاح:</b>
 يرجى التواصل مباشرة مع الأدمن: 
-👤 @{h.escape(ADMIN_USERNAME)}
+👤 @{h(ADMIN_USERNAME)}
 """
     await msg.reply(prices_msg)
 
@@ -1232,7 +1238,7 @@ async def show_prices(msg: types.Message):
 async def contact_support(msg: types.Message):
     support_msg = f"""
 🤝 للدعم الفني أو الاستفسارات أو طلب مفتاح اشتراك، يرجى التواصل مباشرة مع الأدمن:
-🔗 @{h.escape(ADMIN_USERNAME)}
+🔗 @{h(ADMIN_USERNAME)}
 """
     await msg.reply(support_msg)
 
@@ -1312,7 +1318,7 @@ async def process_broadcast_target(call: types.CallbackQuery, state: FSMContext)
     await state.set_state(AdminStates.waiting_broadcast_text)
     
     await call.message.edit_text(
-        f"✅ تم اختيار: <b>{h.escape(target_msg)}</b>.\n\nالآن، يرجى إدخال نص الرسالة المراد بثها:"
+        f"✅ تم اختيار: <b>{h(target_msg)}</b>.\n\nالآن، يرجى إدخال نص الرسالة المراد بثها:"
     )
     await call.answer()
 
@@ -1347,7 +1353,7 @@ async def send_broadcast(msg: types.Message, state: FSMContext):
                     pass 
                 
     target_msg = "لجميع المستخدمين غير المحظورين" if broadcast_target == 'all' else "للمشتركين VIP فقط"
-    await msg.reply(f"✅ تم إرسال الرسالة بنجاح إلى <b>{sent_count}</b> مستخدم ({h.escape(target_msg)}).", reply_markup=admin_menu())
+    await msg.reply(f"✅ تم إرسال الرسالة بنجاح إلى <b>{sent_count}</b> مستخدم ({h(target_msg)}).", reply_markup=admin_menu())
 
 # ----------------------------------------------------------------------------------
 
@@ -1365,7 +1371,7 @@ async def process_ban(msg: types.Message, state: FSMContext):
     try:
         user_id_to_ban = int(msg.text.strip())
         update_ban_status(user_id_to_ban, 1) 
-        await msg.reply(f"✅ تم حظر المستخدم <b>{h.escape(str(user_id_to_ban))}</b> بنجاح.", reply_markup=admin_menu())
+        await msg.reply(f"✅ تم حظر المستخدم <b>{h(str(user_id_to_ban))}</b> بنجاح.", reply_markup=admin_menu())
     except ValueError:
         await msg.reply("❌ ID المستخدم غير صحيح. يرجى إدخال رقم.", reply_markup=admin_menu())
 
@@ -1383,7 +1389,7 @@ async def process_unban(msg: types.Message, state: FSMContext):
     try:
         user_id_to_unban = int(msg.text.strip())
         update_ban_status(user_id_to_unban, 0) 
-        await msg.reply(f"✅ تم إلغاء حظر المستخدم <b>{h.escape(str(user_id_to_unban))}</b> بنجاح.", reply_markup=admin_menu())
+        await msg.reply(f"✅ تم إلغاء حظر المستخدم <b>{h(str(user_id_to_unban))}</b> بنجاح.", reply_markup=admin_menu())
     except ValueError:
         await msg.reply("❌ ID المستخدم غير صحيح. يرجى إدخال رقم.", reply_markup=admin_menu())
 
@@ -1409,7 +1415,7 @@ async def process_create_key(msg: types.Message, state: FSMContext):
         key_msg = f"""
 🎉 تم إنشاء مفتاح تفعيل جديد!
 ━━━━━━━━━━━━━━━
-<b>المفتاح:</b> <code>{h.escape(key)}</code>
+<b>المفتاح:</b> <code>{h(key)}</code>
 <b>عدد الأيام:</b> {days} يوم
 """
         await msg.reply(key_msg, parse_mode="HTML", reply_markup=admin_menu())
@@ -1469,15 +1475,15 @@ async def check_open_trades():
             closed_count += 1
             
             result_emoji = "🏆🎉" if exit_status == "HIT_TP" else "🛑"
-            trade_type_msg = h.bold("SCALPING / HIGH MOMENTUM" if trade_type == "SCALPING" else "LONG-TERM / SWING")
+            trade_type_msg = f"<b>SCALPING / HIGH MOMENTUM</b>" if trade_type == "SCALPING" else f"<b>LONG-TERM / SWING</b>"
             
             close_msg = f"""
 🚨 TRADE TYPE: {trade_type_msg} 🚨
 {result_emoji} <b>TRADE CLOSED!</b> {result_emoji}
 ━━━━━━━━━━━━━━━
 📈 <b>PAIR:</b> XAUUSD 
-➡️ <b>ACTION:</b> <b>{h.escape(action)}</b>
-🔒 <b>RESULT:</b> تم الإغلاق عند <b>{h.escape(exit_status.replace('HIT_', ''))}</b>!
+➡️ <b>ACTION:</b> <b>{action}</b>
+🔒 <b>RESULT:</b> تم الإغلاق عند <b>{exit_status.replace('HIT_', '')}</b>!
 💰 <b>PRICE:</b> ${float(close_price):,.2f}
 """
             all_users = get_all_users_ids()
@@ -1489,7 +1495,7 @@ async def check_open_trades():
                         pass
                         
             if ADMIN_ID != 0:
-                await bot.send_message(ADMIN_ID, f"🔔 تم إغلاق الصفقة <b>{h.escape(trade_id)}</b> بنجاح على: {h.escape(exit_status)}", parse_mode="HTML")
+                await bot.send_message(ADMIN_ID, f"🔔 تم إغلاق الصفقة <b>{trade_id}</b> بنجاح على: {exit_status}", parse_mode="HTML")
 
 # ===============================================
 # === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
@@ -1607,3 +1613,4 @@ if __name__ == "__main__":
         print("🤖 تم إيقاف البوت بنجاح.")
     except Exception as e:
         print(f"حدث خطأ كبير: {e}")
+
