@@ -18,8 +18,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
-from aiogram.utils import html as h # ⭐️ إضافة مكتبة HTML لتنظيف المدخلات الديناميكية
-
+# السطر 21 تقريباً:
+from aiogram.utils.markdown import h # ⭐️ تم تصحيح مسار الاستيراد لـ h في aiogram V3+
 # =============== تعريف حالات FSM المُعدَّلة والمُضافة ===============
 class AdminStates(StatesGroup):
     waiting_broadcast_target = State() 
