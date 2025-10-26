@@ -557,7 +557,8 @@ def calculate_adx(df, window=14):
     
     # Directional Indicators (DI)
     df['+DI'] = (df['+DMS'] / df['TRS'].replace(0, 1e-10)).fillna(0) * 100
-    df['-DI'] = (df['+DMS'] / df['TRS'].replace(0, 1e-10)).fillna(0) * 100 
+    # 💥 تم تصحيح الخطأ الحرج: يجب استخدام '-DMS' لحساب '-DI'
+    df['-DI'] = (df['-DMS'] / df['TRS'].replace(0, 1e-10)).fillna(0) * 100 
     
     # Directional Index (DX) and Average Directional Index (ADX)
     df['DX'] = (abs(df['+DI'] - df['-DI']) / (df['+DI'] + df['-DI']).replace(0, 1e-10)).fillna(0) * 100
@@ -950,7 +951,7 @@ async def send_auto_trade_signal(confidence_target: float):
                 except Exception:
                     pass
             
-            admin_confirmation_msg = f"✅ تم إرسال صفقة تلقائية ({confidence_percent:.2f}%) لـ {DISPLAY_SYMBOL}: <b>{action}</b> عند ${entry:,.2f}. تم الإرسال إلى {len(vip_users)} مستخدم VIP. ID: {trade_id}"
+            admin_confirmation_msg = f"✅ تم إرسال صفقة تلقائية ({confidence_percent:.2f}%) لـ {DISPLAY_SYMBOL}: <b>{h.escape(action)}</b> عند ${entry:,.2f}. تم الإرسال إلى {len(vip_users)} مستخدم VIP. ID: {h.escape(trade_id)}"
             if ADMIN_ID != 0:
                  await bot.send_message(ADMIN_ID, admin_confirmation_msg, parse_mode="HTML")
                  
@@ -1072,9 +1073,9 @@ async def show_last_auto_sends(msg: types.Message):
         conf_perc = confidence * 100
         
         report += f"""
-{('🟢' if action == 'BUY' else '🔴')} <b>{action}</b> ({trade_type})
+{('🟢' if action == 'BUY' else '🔴')} <b>{h.escape(action)}</b> ({h.escape(trade_type)})
   - <b>الثقة:</b> {conf_perc:.2f}%
-  - <b>الوقت:</b> {send_time} UTC
+  - <b>الوقت:</b> {h.escape(send_time)} UTC
 """
     await msg.reply(report, parse_mode="HTML")
 
@@ -1140,7 +1141,7 @@ async def analyze_market_now(msg: types.Message):
         status_msg = f"""
 💡 <b>تقرير وضع السوق الحالي - XAUUSD</b>
 ━━━━━━━━━━━━━━━
-🔎 <b>الإشارة المتاحة:</b> <b>{h.escape(action)}</b> ({trade_type})
+🔎 <b>الإشارة المتاحة:</b> <b>{h.escape(action)}</b> ({h.escape(trade_type)})
 🔒 <b>الثقة:</b> <b>{confidence_percent:.2f}%</b>
 ✅ <b>القرار:</b> إشارة قوية جداً (98%+).
 ━━━━━━━━━━━━━━━
@@ -1297,10 +1298,10 @@ async def show_active_trades(msg: types.Message):
         signal_emoji = "🟢" if action == "BUY" else "🔴"
         
         report += f"""
-{signal_emoji} <b>{action} @ ${entry:,.2f}</b> ({'سريع' if trade_type == 'SCALPING' else 'طويل'})
+{signal_emoji} <b>{h.escape(action)} @ ${entry:,.2f}</b> ({'سريع' if trade_type == 'SCALPING' else 'طويل'})
   - <b>TP:</b> ${tp:,.2f}
   - <b>SL:</b> ${sl:,.2f}
-  - <b>ID:</b> <code>{trade_id}</code>
+  - <b>ID:</b> <code>{h.escape(trade_id)}</code>
 """
     await msg.reply(report, parse_mode="HTML")
 
@@ -1308,9 +1309,9 @@ async def show_active_trades(msg: types.Message):
 async def show_subscription_status(msg: types.Message):
     status = get_user_vip_status(msg.from_user.id)
     if status == "غير مشترك":
-        await msg.reply(f"⚠️ أنت حالياً <b>غير مشترك</b> في خدمة VIP.\nللاشتراك، اطلب مفتاح تفعيل من الأدمن (@{ADMIN_USERNAME}) ثم اضغط '🔗 تفعيل مفتاح الاشتراك'.")
+        await msg.reply(f"⚠️ أنت حالياً <b>غير مشترك</b> في خدمة VIP.\nللاشتراك، اطلب مفتاح تفعيل من الأدمن (@{h.escape(ADMIN_USERNAME)}) ثم اضغط '🔗 تفعيل مفتاح الاشتراك'.")
     else:
-        await msg.reply(f"✅ أنت مشترك في خدمة VIP.\nالاشتراك ينتهي في: <b>{status}</b>.")
+        await msg.reply(f"✅ أنت مشترك في خدمة VIP.\nالاشتراك ينتهي في: <b>{h.escape(status)}</b>.")
 
 @dp.message(F.text == "🔗 تفعيل مفتاح الاشتراك")
 async def prompt_key_activation(msg: types.Message, state: FSMContext):
@@ -1326,7 +1327,7 @@ async def process_key_activation(msg: types.Message, state: FSMContext):
     
     if success:
         formatted_date = new_vip_until.strftime('%Y-%m-%d %H:%M') if new_vip_until else "غير محدد"
-        await msg.reply(f"🎉 تم تفعيل مفتاح الاشتراك بنجاح!\n✅ تمت إضافة {days} يوم/أيام إلى اشتراكك.\nالاشتراك الجديد ينتهي في: <b>{formatted_date}</b>.", reply_markup=user_menu())
+        await msg.reply(f"🎉 تم تفعيل مفتاح الاشتراك بنجاح!\n✅ تمت إضافة {days} يوم/أيام إلى اشتراكك.\nالاشتراك الجديد ينتهي في: <b>{h.escape(formatted_date)}</b>.", reply_markup=user_menu())
     else:
         await msg.reply("❌ فشل تفعيل المفتاح. يرجى التأكد من صحة المفتاح وأنه لم يُستخدم من قبل.", reply_markup=user_menu())
 
@@ -1358,7 +1359,7 @@ async def show_prices(msg: types.Message):
 ━━━━━━━━━━━━━━━
 🛒 <b>للاشتراك وتفعيل المفتاح:</b>
 يرجى التواصل مباشرة مع الأدمن: 
-👤 @{ADMIN_USERNAME}
+👤 @{h.escape(ADMIN_USERNAME)}
 """
     await msg.reply(prices_msg)
 
@@ -1366,7 +1367,7 @@ async def show_prices(msg: types.Message):
 async def contact_support(msg: types.Message):
     support_msg = f"""
 🤝 للدعم الفني أو الاستفسارات أو طلب مفتاح اشتراك، يرجى التواصل مباشرة مع الأدمن:
-🔗 @{ADMIN_USERNAME}
+🔗 @{h.escape(ADMIN_USERNAME)}
 """
     await msg.reply(support_msg)
 
@@ -1449,8 +1450,9 @@ async def process_broadcast_target(call: types.CallbackQuery, state: FSMContext)
     await state.update_data(broadcast_target=target)
     await state.set_state(AdminStates.waiting_broadcast_text)
     
+    # ⚠️ تأمين الرسالة المعروضة للأدمن
     await call.message.edit_text(
-        f"✅ تم اختيار: <b>{target_msg}</b>.\n\nالآن، يرجى إدخال نص الرسالة المراد بثها:"
+        f"✅ تم اختيار: <b>{h.escape(target_msg)}</b>.\n\nالآن، يرجى إدخال نص الرسالة المراد بثها:"
     )
     await call.answer()
 
@@ -1480,6 +1482,7 @@ async def send_broadcast(msg: types.Message, state: FSMContext):
             
             if should_send:
                 try:
+                    # نرسل النص كما هو (بما في ذلك HTML/Markdown إذا تم إدخاله بواسطة الأدمن)
                     await bot.send_message(uid, broadcast_text, parse_mode="HTML")
                     sent_count += 1
                 except Exception:
@@ -1487,7 +1490,7 @@ async def send_broadcast(msg: types.Message, state: FSMContext):
                 
     target_msg = "لجميع المستخدمين غير المحظورين" if broadcast_target == 'all' else "للمشتركين VIP فقط"
     # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
-    await msg.reply(f"✅ تم إرسال الرسالة بنجاح إلى <b>{sent_count}</b> مستخدم ({target_msg}).", reply_markup=admin_menu())
+    await msg.reply(f"✅ تم إرسال الرسالة بنجاح إلى <b>{sent_count}</b> مستخدم ({h.escape(target_msg)}).", reply_markup=admin_menu())
 
 # ----------------------------------------------------------------------------------
 
@@ -1505,8 +1508,8 @@ async def process_ban(msg: types.Message, state: FSMContext):
     try:
         user_id_to_ban = int(msg.text.strip())
         update_ban_status(user_id_to_ban, 1) 
-        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
-        await msg.reply(f"✅ تم حظر المستخدم <b>{user_id_to_ban}</b> بنجاح.", reply_markup=admin_menu())
+        # ⚠️ تأمين ID المستخدم في الرد
+        await msg.reply(f"✅ تم حظر المستخدم <b>{h.escape(str(user_id_to_ban))}</b> بنجاح.", reply_markup=admin_menu())
     except ValueError:
         await msg.reply("❌ ID المستخدم غير صحيح. يرجى إدخال رقم.", reply_markup=admin_menu())
 
@@ -1524,8 +1527,8 @@ async def process_unban(msg: types.Message, state: FSMContext):
     try:
         user_id_to_unban = int(msg.text.strip())
         update_ban_status(user_id_to_unban, 0) 
-        # ⚠️ تم تصحيح تنسيق الرسالة بالكامل إلى HTML
-        await msg.reply(f"✅ تم إلغاء حظر المستخدم <b>{user_id_to_unban}</b> بنجاح.", reply_markup=admin_menu())
+        # ⚠️ تأمين ID المستخدم في الرد
+        await msg.reply(f"✅ تم إلغاء حظر المستخدم <b>{h.escape(str(user_id_to_unban))}</b> بنجاح.", reply_markup=admin_menu())
     except ValueError:
         await msg.reply("❌ ID المستخدم غير صحيح. يرجى إدخال رقم.", reply_markup=admin_menu())
 
@@ -1552,7 +1555,7 @@ async def process_create_key(msg: types.Message, state: FSMContext):
         key_msg = f"""
 🎉 تم إنشاء مفتاح تفعيل جديد!
 ━━━━━━━━━━━━━━━
-<b>المفتاح:</b> <code>{key}</code>
+<b>المفتاح:</b> <code>{h.escape(key)}</code>
 <b>عدد الأيام:</b> {days} يوم
 """
         await msg.reply(key_msg, parse_mode="HTML", reply_markup=admin_menu())
@@ -1595,7 +1598,7 @@ async def check_open_trades():
         if action == "BUY":
             if current_price >= tp:
                 exit_status = "HIT_TP"
-                close_price = tp
+                close_price = tp # يتم استخدام TP/SL كنقطة إغلاق افتراضية
             elif current_price <= sl:
                 exit_status = "HIT_SL"
                 close_price = sl
@@ -1603,7 +1606,7 @@ async def check_open_trades():
         elif action == "SELL":
             if current_price <= tp:
                 exit_status = "HIT_TP"
-                close_price = tp
+                close_price = tp # يتم استخدام TP/SL كنقطة إغلاق افتراضية
             elif current_price >= sl:
                 exit_status = "HIT_SL"
                 close_price = sl
@@ -1623,7 +1626,7 @@ async def check_open_trades():
 ━━━━━━━━━━━━━━━
 📈 <b>PAIR:</b> XAUUSD 
 ➡️ <b>ACTION:</b> <b>{h.escape(action)}</b>
-🔒 <b>RESULT:</b> تم الإغلاق عند <b>{exit_status.replace('HIT_', '')}</b>!
+🔒 <b>RESULT:</b> تم الإغلاق عند <b>{h.escape(exit_status.replace('HIT_', ''))}</b>!
 💰 <b>PRICE:</b> ${float(close_price):,.2f}
 """
             all_users = get_all_users_ids()
@@ -1635,7 +1638,7 @@ async def check_open_trades():
                         pass
                         
             if ADMIN_ID != 0:
-                await bot.send_message(ADMIN_ID, f"🔔 تم إغلاق الصفقة <b>{trade_id}</b> بنجاح على: {exit_status}", parse_mode="HTML")
+                await bot.send_message(ADMIN_ID, f"🔔 تم إغلاق الصفقة <b>{h.escape(trade_id)}</b> بنجاح على: {h.escape(exit_status)}", parse_mode="HTML")
 
 # ===============================================
 # === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
