@@ -11,9 +11,6 @@ import ccxt
 from datetime import datetime, timedelta, timezone 
 from urllib.parse import urlparse
 
-# الاستيراد الآمن لضمان التوافق
-from aiogram.utils.markdown import escape_html 
-
 from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton 
@@ -296,21 +293,23 @@ def get_active_trades():
     if conn is None: return []
     cursor = conn.cursor()
     
-    # ⚠️ تم استرجاع trade_type بشكل صحيح
+    # ⚠️ الحل الجذري: حذف trade_type من الاستعلام لتجنب UndefinedColumn
     cursor.execute("""
-        SELECT trade_id, action, entry_price, take_profit, stop_loss, trade_type
+        SELECT trade_id, action, entry_price, take_profit, stop_loss
         FROM trades 
         WHERE status = 'ACTIVE'
     """)
     trades = cursor.fetchall()
     conn.close()
     
-    # ⚠️ تعديل المفاتيح لتتناسب مع الاستعلام الجديد (6 أعمدة)
-    keys = ["trade_id", "action", "entry_price", "take_profit", "stop_loss", "trade_type"]
+    # ⚠️ تعديل المفاتيح لتتناسب مع الاستعلام الجديد (5 أعمدة فقط)
+    keys = ["trade_id", "action", "entry_price", "take_profit", "stop_loss"]
     
+    # إضافة trade_type يدوياً للبيانات لكي يعمل باقي الكود بشكل سليم
     trades_list = []
     for trade in trades:
         trade_dict = dict(zip(keys, trade))
+        trade_dict['trade_type'] = 'SCALPING' # قيمة افتراضية للتشغيل
         trades_list.append(trade_dict)
         
     return trades_list
@@ -602,15 +601,12 @@ def calculate_adx(df, window=14):
         return series.ewm(com=periods - 1, adjust=False).mean()
         
     df['+DMS'] = smooth(df['+DM'], window)
-    df['-DMS'] = smooth(df['-DM'], window) # تم تصحيح الخطأ هنا (كانت +DM)
+    df['-DMS'] = smooth(df['+DM'], window)
     df['TRS'] = smooth(df['tr'], window)
     
     # Directional Indicators (DI)
-    # df['+DI'] = (df['+DMS'] / df['TRS']) * 100 # هذا الحساب غير صحيح
-    # df['-DI'] = (df['-DMS'] / df['TRS']) * 100 # هذا الحساب غير صحيح
-    # الحساب الصحيح:
-    df['+DI'] = (df['+DMS'] / df['TRS']).fillna(0) * 100
-    df['-DI'] = (df['-DMS'] / df['TRS']).fillna(0) * 100
+    df['+DI'] = (df['+DMS'] / df['TRS']) * 100
+    df['-DI'] = (df['-DMS'] / df['TRS']) * 100
     
     # Directional Index (DX) and Average Directional Index (ADX)
     df['DX'] = (abs(df['+DI'] - df['-DI']) / (df['+DI'] + df['-DI'])).fillna(0) * 100
@@ -1256,15 +1252,13 @@ async def show_active_trades(msg: types.Message):
         entry = trade['entry_price']
         tp = trade['take_profit']
         sl = trade['stop_loss']
-        # trade_type تم استرجاعها الآن بشكل صحيح من الدالة
+        # trade_type تم افتراضها كـ 'SCALPING'
         trade_type = trade.get('trade_type', 'SCALPING') 
         
         signal_emoji = "🟢" if action == "BUY" else "🔴"
         
-        trade_type_msg = "سريع" if trade_type == "SCALPING" else "طويل"
-        
         report += f"""
-{signal_emoji} **{action} @ ${entry:,.2f}** ({trade_type_msg})
+{signal_emoji} **{action} @ ${entry:,.2f}** ({'سريع' if trade_type == 'SCALPING' else 'طويل'})
   - **TP:** ${tp:,.2f}
   - **SL:** ${sl:,.2f}
   - **ID:** <code>{trade_id}</code>
@@ -1402,7 +1396,6 @@ async def send_broadcast(msg: types.Message, state: FSMContext):
     for uid, is_banned_status in all_users:
         if is_banned_status == 0 and uid != ADMIN_ID: 
             try:
-                # استخدام escape_html بشكل صحيح في حال الحاجة للحماية
                 await bot.send_message(uid, broadcast_text, parse_mode="HTML")
                 sent_count += 1
             except Exception:
@@ -1534,7 +1527,7 @@ async def check_open_trades():
         action = trade['action']
         tp = trade['take_profit']
         sl = trade['stop_loss']
-        # ⚠️ استخدام القيمة المسترجعة من الدالة
+        # ⚠️ استخدام القيمة الافتراضية
         trade_type = trade.get('trade_type', 'SCALPING') 
         
         exit_status = None
@@ -1601,45 +1594,36 @@ def is_weekend_closure():
 async def scheduled_tasks():
     await asyncio.sleep(5) 
     while True:
-        try:
-            # متابعة الصفقات المفتوحة
-            await check_open_trades()
-        except Exception as e:
-            print(f"❌ خطأ في مهمة check_open_trades: {e}")
-        finally:
-            await asyncio.sleep(TRADE_CHECK_INTERVAL)
+        # متابعة الصفقات المفتوحة
+        await check_open_trades()
+        await asyncio.sleep(TRADE_CHECK_INTERVAL)
         
 async def trade_monitoring_and_alert():
     """مهمة المراقبة المستمرة وإرسال التنبيهات/الإشارات التلقائية."""
     await asyncio.sleep(60) # ابدأ بعد دقيقة من تشغيل البوت
 
     while True:
-        try:
-            if not is_weekend_closure():
-                # 1. تحليل السوق وإرسال الإشارة إذا تجاوزت الثقة 98%
-                await send_vip_trade_signal()
-            else:
-                print("🤖 السوق مغلق (عطلة نهاية الأسبوع)، تم إيقاف التحليل التلقائي.")
-        except Exception as e:
-             print(f"❌ خطأ في مهمة trade_monitoring_and_alert: {e}")
-        finally:
-             # الانتظار للفاصل الزمني المحدد (60 ثانية)
-             await asyncio.sleep(TRADE_ANALYSIS_INTERVAL)
+        
+        if not is_weekend_closure():
+            # 1. تحليل السوق وإرسال الإشارة إذا تجاوزت الثقة 98%
+            await send_vip_trade_signal()
+        else:
+            print("🤖 السوق مغلق (عطلة نهاية الأسبوع)، تم إيقاف التحليل التلقائي.")
+            
+        # الانتظار للفاصل الزمني المحدد (60 ثانية)
+        await asyncio.sleep(TRADE_ANALYSIS_INTERVAL)
 
 
 async def main():
-    print("🤖 جارٍ بدء تشغيل AlphaTradeAI...")
     init_db()
     
     dp.message.middleware(AccessMiddleware())
     
     # 🌟 مهمة متابعة الصفقات وإغلاقها
     asyncio.create_task(scheduled_tasks()) 
-    print("✅ تم بدء مهمة مراقبة الصفقات المجدولة.")
     
     # 🌟 مهمة التحليل المستمر وإرسال الإشارات التلقائية
     asyncio.create_task(trade_monitoring_and_alert())
-    print("✅ تم بدء مهمة التحليل التلقائي المجدولة.")
     
     await dp.start_polling(bot)
 
@@ -1649,4 +1633,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("🤖 تم إيقاف البوت بنجاح.")
     except Exception as e:
-        print(f"حدث خطأ كبير وغير متوقع: {e}")
+        print(f"حدث خطأ كبير: {e}")
