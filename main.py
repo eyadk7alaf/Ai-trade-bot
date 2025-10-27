@@ -1440,10 +1440,11 @@ async def check_open_trades():
     try:
         current_price = fetch_current_price_ccxt(TRADE_SYMBOL)
         if current_price is None:
-             raise Exception("Failed to fetch price.")
+             # إذا فشل جلب السعر، لا يجب أن ننهي المهمة، بل نخرج فقط من هذه الدورة
+             raise Exception("Failed to fetch price.") 
     except Exception as e:
         print(f"❌ فشل في جلب سعر السوق الحالي لمتابعة الصفقات: {e}")
-        return
+        return # الخروج لانتظار الدورة التالية
 
     closed_count = 0
     
@@ -1508,19 +1509,26 @@ async def scheduled_tasks_checker():
     """مهمة متابعة إغلاق الصفقات فقط (كل 30 ثانية)."""
     await asyncio.sleep(5) 
     while True:
-        # تستمر حتى في عطلة نهاية الأسبوع لضمان الإغلاق الفوري عند فتح السوق
-        await check_open_trades() 
+        try: # 💡 بداية كتلة Try
+            # تستمر حتى في عطلة نهاية الأسبوع لضمان الإغلاق الفوري عند فتح السوق
+            await check_open_trades() 
+        except Exception as e: # 💡 نهاية كتلة Try وبداية كتلة Except
+            print(f"❌ خطأ في مهمة متابعة الصفقات (scheduled_tasks_checker): {e}") 
+            
         await asyncio.sleep(TRADE_CHECK_INTERVAL)
 
 async def trade_monitoring_98_percent():
     """مهمة التحليل المستمر وإرسال الإشارات التلقائية 98% (كل 3 دقائق)."""
     await asyncio.sleep(60) 
     while True:
-        # 🛑 تتوقف في العطلة
-        if not is_weekend_closure():
-            await send_auto_trade_signal(CONFIDENCE_THRESHOLD_98)
-        else:
-            print("😴 عطلة نهاية الأسبوع: تم تخطي التحليل التلقائي 98%.")
+        try: # 💡 بداية كتلة Try
+            # 🛑 تتوقف في العطلة
+            if not is_weekend_closure():
+                await send_auto_trade_signal(CONFIDENCE_THRESHOLD_98)
+            else:
+                print("😴 عطلة نهاية الأسبوع: تم تخطي التحليل التلقائي 98%.")
+        except Exception as e: # 💡 نهاية كتلة Try وبداية كتلة Except
+            print(f"❌ خطأ في مهمة التحليل التلقائي 98% (trade_monitoring_98_percent): {e}")
         
         await asyncio.sleep(TRADE_ANALYSIS_INTERVAL_98)
 
@@ -1528,11 +1536,14 @@ async def trade_monitoring_85_percent():
     """مهمة التحليل المستمر وإرسال الإشارات التلقائية 90% (كل 3 دقائق)."""
     await asyncio.sleep(30) 
     while True:
-        # 🛑 تتوقف في العطلة
-        if not is_weekend_closure():
-            await send_auto_trade_signal(CONFIDENCE_THRESHOLD_85) 
-        else:
-            print("😴 عطلة نهاية الأسبوع: تم تخطي التحليل التلقائي 90%.")
+        try: # 💡 بداية كتلة Try
+            # 🛑 تتوقف في العطلة
+            if not is_weekend_closure():
+                await send_auto_trade_signal(CONFIDENCE_THRESHOLD_85) 
+            else:
+                print("😴 عطلة نهاية الأسبوع: تم تخطي التحليل التلقائي 90%.")
+        except Exception as e: # 💡 نهاية كتلة Try وبداية كتلة Except
+            print(f"❌ خطأ في مهمة التحليل التلقائي 90% (trade_monitoring_85_percent): {e}")
         
         await asyncio.sleep(TRADE_ANALYSIS_INTERVAL_85)
         
@@ -1540,11 +1551,14 @@ async def periodic_vip_alert():
     """مهمة إرسال رسائل النشاط الدوري لـ VIP (كل 6 ساعات)، وتتوقف في العطلة."""
     await asyncio.sleep(120) 
     while True:
-        # 🛑 تتوقف في العطلة
-        if not is_weekend_closure():
-            await send_periodic_activity_message()
-        else:
-             print(f"😴 عطلة نهاية الأسبوع: تم تخطي رسالة النشاط الدوري.")
+        try: # 💡 بداية كتلة Try
+            # 🛑 تتوقف في العطلة
+            if not is_weekend_closure():
+                await send_periodic_activity_message()
+            else:
+                 print(f"😴 عطلة نهاية الأسبوع: تم تخطي رسالة النشاط الدوري.")
+        except Exception as e: # 💡 نهاية كتلة Try وبداية كتلة Except
+             print(f"❌ خطأ في مهمة التنبيه الدوري (periodic_vip_alert): {e}")
              
         await asyncio.sleep(ACTIVITY_ALERT_INTERVAL) 
 
