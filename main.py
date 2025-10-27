@@ -18,11 +18,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
-# 🚨🚨🚨 التعديل الحاسم: تم تبسيط استيراد الـ HTML لتفادي مشكلة 'h' و 'html'
+# 🚨🚨🚨 التعديل الحاسم: تم استبدال السطر القديم الذي يسبب المشكلة
+# من: from aiogram.utils.markdown import h 
+# أو: from aiogram.utils import html as h
+# إلى الاستيراد الأكثر توافقاً escape_html مع تعريف h كدالة لتنظيف النص.
 from aiogram.utils.markdown import escape_html 
 
-# تعريف دالة h لتكون هي دالة تنظيف الـ HTML (hcode)
-# بما أننا لا نعرف الإصدار بدقة، سنستخدم escape_html لتنظيف أي نصوص ديناميكية
+# تعريف دالة h لتكون هي دالة تنظيف الـ HTML (escape_html)
+# هذا يحل مشكلة الاستيراد ويضمن أن النص آمن عند عرضه
 def h(text):
     return escape_html(str(text)) 
 
