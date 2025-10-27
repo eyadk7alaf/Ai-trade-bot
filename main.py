@@ -51,24 +51,25 @@ CONFIDENCE_THRESHOLD_90 = float(os.getenv("CONFIDENCE_THRESHOLD_90", "0.90")) # 
 # ⚠️ متغيرات فحص الجدولة (كل 3 دقائق)
 TRADE_ANALYSIS_INTERVAL_98 = int(os.getenv("TRADE_ANALYSIS_INTERVAL_98", "180")) # 180 ثانية = 3 دقائق
 TRADE_ANALYSIS_INTERVAL_90 = int(os.getenv("TRADE_ANALYSIS_INTERVAL_90", "180")) # 180 ثانية = 3 دقائق
+TRADE_CHECK_INTERVAL = int(os.getenv("TRADE_CHECK_INTERVAL", "30")) # تصحيح NameError
 
 ALERT_INTERVAL = int(os.getenv("ALERT_INTERVAL", "14400")) # فاصل التنبيهات لا يزال كما هو
 
 # ⚠️ المتغيرات العامة (معاملات تحديد نقاط الخروج والدخول - تم التحديث لتقليل المخاطر)
-SL_FACTOR = 3.0           # عامل وقف الخسارة (أكبر بقليل ليعطي مجال للحركة)
-SCALPING_RR_FACTOR = 1.5  # عامل R:R لصفقات الـ Scalping (أكثر واقعية)
-LONGTERM_RR_FACTOR = 1.5  # عامل R:R لصفقات الـ Long-Term (أكثر واقعية)
-MAX_SL_DISTANCE = 7.0     # أقصى مسافة SL مسموح بها
-MIN_SL_DISTANCE = 1.5     # أدنى مسافة SL مسموح بها (لتقليل المخاطر الفورية)
+SL_FACTOR = 3.0           
+SCALPING_RR_FACTOR = 1.5  
+LONGTERM_RR_FACTOR = 1.5  
+MAX_SL_DISTANCE = 7.0     
+MIN_SL_DISTANCE = 1.5     
 
 # فلاتر ADX الجديدة (تم تعديلها لتصبح أكثر مرونة)
 ADX_SCALPING_MIN = 15
 ADX_LONGTERM_MIN = 12
 BB_PROXIMITY_THRESHOLD = 0.5 
 
-# الحد الأدنى لعدد الفلاتر المارة
+# الحد الأدنى لعدد الفلاتر المارة (تم تعديل 90% هنا لـ 5 فلاتر)
 MIN_FILTERS_FOR_98 = 7 
-MIN_FILTERS_FOR_90 = 6 
+MIN_FILTERS_FOR_90 = 5 # ⚠️ تم تخفيض هذا الرقم لتلبية طلب زيادة الصفقات
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 
@@ -91,11 +92,6 @@ dp = Dispatcher(storage=MemoryStorage())
 # =========================================================================================
 # === دوال مساعدة في العرض (لتعمل مع الكود القديم الذي لا يحتوي على h) ===
 # =========================================================================================
-
-# *نظراً لأن الكود القديم يعمل بدون h، سنفترض أنه لم يستخدمها في رسائل HTML،
-# *ولكن يجب أن نستخدمها الآن لتنظيف النصوص. سنستوردها بشكل صريح.
-# *في الكود القديم قد لا تكون موجودة، لكن الإرسال لـ Telegram يتطلب دالة لتنظيف HTML.
-# *سأضيف دالة مساعدة بسيطة للتنظيف إذا كانت المكتبة لا تدعمها بالاسم القصير.
 
 def h(text):
     """دالة تنظيف HTML بدائية (Escaping)."""
@@ -343,6 +339,43 @@ def update_trade_status(trade_id, exit_status, close_price):
     """, (exit_status, close_price, trade_id))
     conn.commit()
     conn.close()
+
+# ⚠️ التعديل المطلوب: دالة جرد الصفقات الأسبوعية للمستخدمين 
+def get_weekly_trade_performance():
+    conn = get_db_connection()
+    if conn is None: return "⚠️ فشل الاتصال بقاعدة البيانات."
+    cursor = conn.cursor()
+    
+    time_7_days_ago = time.time() - (7 * 24 * 3600)
+
+    cursor.execute("""
+        SELECT trade_id, action, exit_status, close_price, sent_at, trade_type
+        FROM trades 
+        WHERE sent_at > %s
+    """, (time_7_days_ago,))
+    
+    trades = cursor.fetchall()
+    conn.close()
+    
+    total_sent = len(trades)
+    hit_tp = sum(1 for t in trades if t[2] == 'HIT_TP')
+    hit_sl = sum(1 for t in trades if t[2] == 'HIT_SL')
+    active_trades = sum(1 for t in trades if t[2] == 'NONE' and t[3] is None) # الصفقات التي لم تغلق بعد
+
+    if total_sent == 0:
+        return "⚠️ لم يتم إرسال أي صفقات خلال الـ 7 أيام الماضية."
+        
+    report_msg = f"""
+📈 **تقرير أداء الصفقات الأسبوعي (VIP)**
+📅 **آخر 7 أيام**
+━━━━━━━━━━━━━━━
+📨 **إجمالي الصفقات المُرسلة:** {total_sent}
+🟢 **صفقات حققت الهدف (TP):** {hit_tp}
+🔴 **صفقات ضربت الوقف (SL):** {hit_sl}
+⏳ **الصفقات لا تزال نشطة:** {active_trades}
+"""
+    return report_msg
+
 
 def get_daily_trade_report():
     conn = get_db_connection()
@@ -636,7 +669,7 @@ def calculate_adx(df, window=14):
 def get_signal_and_confidence(symbol: str, min_filters: int) -> tuple[str, float, str, float, float, float, float, str, int]:
     """
     تحليل مزدوج (Scalping / Long-Term) باستخدام 7 فلاتر لتحديد إشارة فائقة القوة.
-    min_filters: الحد الأدنى المطلوب من الفلاتر (6 للـ 90%، 7 للـ 98%).
+    min_filters: الحد الأدنى المطلوب من الفلاتر (5 للـ 90%، 7 للـ 98%).
     النتيجة الإضافية: trade_type، عدد الفلاتر
     """
     global SL_FACTOR, SCALPING_RR_FACTOR, LONGTERM_RR_FACTOR, ADX_SCALPING_MIN, ADX_LONGTERM_MIN, BB_PROXIMITY_THRESHOLD
@@ -688,8 +721,19 @@ def get_signal_and_confidence(symbol: str, min_filters: int) -> tuple[str, float
         MIN_ATR_THRESHOLD = 0.5 
         
         # ⚠️ فلتر التقلب (الفلتر الأول)
+        # تم ترك هذا الفلتر ليكون فلتر أساسي لإخراج الإشارة إذا كان السوق هادئًا جداً
+        # سيتم التعامل مع هذا الفلتر كشرط للخروج التام من الدالة إذا فشل.
         if current_atr < MIN_ATR_THRESHOLD:
-            return f"⚠️ السوق هادئ جداً (ATR: {current_atr:.2f} < {MIN_ATR_THRESHOLD}). الإشارة HOLD.", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE", 0
+            # رسالة معدلة لعرض الفلاتر ونسبة الثقة الصفرية
+            price_msg = f"""
+📊 آخر سعر لـ <b>{h(DISPLAY_SYMBOL)}</b> (المصدر: {h(price_source)})
+السعر: ${entry_price:,.2f} | الوقت: {h(latest_time)} UTC
+
+**تحليل المؤشرات:**
+- **ATR (1m):** {current_atr:.2f} 
+- **الفلاتر المُجتازة:** <b>0/{MIN_FILTERS_FOR_98 if min_filters == MIN_FILTERS_FOR_98 else MIN_FILTERS_FOR_90}</b>
+"""
+            return price_msg, 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE", 0
 
         # === حساب المؤشرات على 5m (للفلاتر)
         data_5m = calculate_adx(data_5m)
@@ -732,6 +776,7 @@ def get_signal_and_confidence(symbol: str, min_filters: int) -> tuple[str, float
         
         action_lt = "HOLD"
         lt_filters_passed = 0
+        lt_total_filters = 5 # إجمالي الفلاتر في هذا المسار
         
         # الشرط الأولي (كروس أوفر على 15m)
         is_buy_signal_15m = (data_15m['EMA_10'].iloc[-2] <= data_15m['EMA_30'].iloc[-2] and data_15m['EMA_10'].iloc[-1] > data_15m['EMA_30'].iloc[-1])
@@ -768,9 +813,11 @@ def get_signal_and_confidence(symbol: str, min_filters: int) -> tuple[str, float
         if action_lt != "HOLD":
             action = action_lt
             trade_type = "LONG_TERM"
-            confidence = min(1.0, 0.9 + (lt_filters_passed / 100)) # تقييم الثقة
+            # الثقة الديناميكية لـ Long-Term (على أساس 5 فلاتر)
+            confidence = min(1.0, 0.85 + (lt_filters_passed * (0.15/lt_total_filters))) 
             rr_factor = LONGTERM_RR_FACTOR
             filters_passed = lt_filters_passed
+            total_filters_used = lt_total_filters
         
         # ===============================================
         # === 2. محاولة استخراج إشارة SCALPING (الخيار الثاني) ===
@@ -780,6 +827,7 @@ def get_signal_and_confidence(symbol: str, min_filters: int) -> tuple[str, float
             
             action_sc = "HOLD"
             sc_filters_passed = 0
+            sc_total_filters = 7 # إجمالي الفلاتر في هذا المسار
             
             # الشرط الأولي (كروس أوفر على 1m)
             ema_fast_prev = data_1m['EMA_5'].iloc[-2]
@@ -839,14 +887,18 @@ def get_signal_and_confidence(symbol: str, min_filters: int) -> tuple[str, float
             if action_sc != "HOLD":
                 action = action_sc
                 trade_type = "SCALPING"
-                confidence = min(1.0, 0.88 + (sc_filters_passed / 100)) # تقييم الثقة
+                # الثقة الديناميكية لـ Scalping (على أساس 7 فلاتر)
+                confidence = min(1.0, 0.88 + (sc_filters_passed * (0.12/sc_total_filters))) 
                 rr_factor = SCALPING_RR_FACTOR
                 filters_passed = sc_filters_passed
+                total_filters_used = sc_total_filters
             else:
                 action = "HOLD"
                 trade_type = "NONE"
                 confidence = 0.0
                 filters_passed = 0
+                total_filters_used = MIN_FILTERS_FOR_98 if min_filters == MIN_FILTERS_FOR_98 else MIN_FILTERS_FOR_90
+
 
         # ===============================================
         # === حساب نقاط الخروج والتقرير النهائي ===
@@ -879,22 +931,29 @@ def get_signal_and_confidence(symbol: str, min_filters: int) -> tuple[str, float
 - **ADX (15m):** {current_adx_15m:.2f} 
 - **SMA 200 (5m):** {latest_sma_200_5m:,.2f}
 - **الاتجاهات (5m/15m/30m/1h):** {htf_trend_5m[0]}/{htf_trend_15m[0]}/{htf_trend_30m[0]}/{htf_trend_1h[0]}
-- **الفلاتر المُجتازة:** <b>{filters_passed}/{MIN_FILTERS_FOR_98 if min_filters == MIN_FILTERS_FOR_98 else MIN_FILTERS_FOR_90}</b>
+- **الفلاتر المُجتازة:** <b>{filters_passed}/{total_filters_used}</b>
 """
             return price_msg, confidence, action, entry_price, stop_loss, take_profit, stop_loss_distance, trade_type, filters_passed
         
-        # ❌ رسالة الرفض النهائي (عندما تكون HOLD)
+        # ❌ رسالة الرفض النهائي (عندما تكون HOLD) - ⚠️ التعديل المطلوب هنا
         else:
+            confidence_percent = (filters_passed / total_filters_used) * 100 if total_filters_used > 0 else 0.0
+            
             price_msg = f"""
+💡 **تقرير التحليل - XAUUSD**
+━━━━━━━━━━━━━━━
+🔎 **الإشارة الحالية:** HOLD
+🔒 **نسبة الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {int(min_filters / total_filters_used * 100)}%)
+❌ **القرار:** لا توجد إشارة قوية (HOLD).
+━━━━━━━━━━━━━━━
 📊 آخر سعر لـ <b>{h(DISPLAY_SYMBOL)}</b> (المصدر: {h(price_source)})
 السعر: ${entry_price:,.2f} | الوقت: {h(latest_time)} UTC
-
 **تحليل المؤشرات:**
 - **RSI (1m):** {current_rsi:.2f} 
 - **ATR (1m):** {current_atr:.2f} 
 - **ADX (5m/15m):** {current_adx_5m:.2f}/{current_adx_15m:.2f} 
 - **الاتجاهات (30m/1h):** {htf_trend_30m[0]}/{htf_trend_1h[0]}
-- **الفلاتر المُجتازة:** <b>{filters_passed}/{MIN_FILTERS_FOR_98 if min_filters == MIN_FILTERS_FOR_98 else MIN_FILTERS_FOR_90}</b>
+- **الفلاتر المُجتازة:** <b>{filters_passed}/{total_filters_used}</b>
 """
             return price_msg, confidence, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE", filters_passed
         
@@ -971,7 +1030,7 @@ async def send_trade_signal_90():
     """هذه الدالة للتحقق الداخلي فقط ولا ترسل رسائل VIP."""
     # لا يوجد فحص للصفقات النشطة هنا، مهمتها فقط البحث عن فرص جيدة للأدمن.
     
-    # 1. إجراء التحليل المزدوج بحد أدنى 6 فلاتر (90%)
+    # 1. إجراء التحليل المزدوج بحد أدنى 5 فلاتر (90%)
     try:
         price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type, filters_passed = get_signal_and_confidence(TRADE_SYMBOL, MIN_FILTERS_FOR_90)
     except Exception as e:
@@ -1011,6 +1070,27 @@ async def send_trade_signal_90():
     else:
          print("💡 لا توجد إشارة واضحة (HOLD) (90%).")
 
+# ⚠️ التعديل المطلوب: إرسال نتيجة الصفقة للأدمن 
+async def notify_admin_trade_result(trade_id, action, exit_status, close_price, trade_type):
+    if ADMIN_ID == 0:
+        return
+        
+    result_emoji = "🏆🎉" if exit_status == "HIT_TP" else "🛑"
+    trade_type_msg = "SCALPING" if trade_type == "SCALPING" else "LONG-TERM"
+    
+    admin_result_msg = f"""
+🔔 **متابعة إغلاق الصفقة #{trade_id}** 🔔
+━━━━━━━━━━━━━━━
+📈 **PAIR:** XAUUSD 
+➡️ **ACTION:** {action} ({trade_type_msg})
+🔒 **RESULT:** {result_emoji} تم الإغلاق عند **{exit_status.replace('HIT_', '')}**!
+💰 **PRICE:** ${close_price:,.2f}
+"""
+    try:
+        await bot.send_message(ADMIN_ID, admin_result_msg, parse_mode="HTML")
+    except Exception as e:
+        print(f"❌ فشل إرسال نتيجة الصفقة للأدمن {e}")
+
 
 # =============== باقي الكود (تم تحديث بعض الدوال لدعم trade_type) ===============
 
@@ -1020,7 +1100,7 @@ def user_menu():
             [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="🔍 الصفقات النشطة")],
             [KeyboardButton(text="🔗 تفعيل مفتاح الاشتراك"), KeyboardButton(text="📝 حالة الاشتراك")],
             [KeyboardButton(text="💰 خطة الأسعار VIP"), KeyboardButton(text="💬 تواصل مع الدعم")],
-            [KeyboardButton(text="ℹ️ عن AlphaTradeAI")]
+            [KeyboardButton(text="ℹ️ عن AlphaTradeAI"), KeyboardButton(text="📊 تقرير الأداء الأسبوعي")] # ⚠️ التعديل المطلوب: إضافة زر التقرير الأسبوعي
         ],
         resize_keyboard=True
     )
@@ -1029,7 +1109,7 @@ def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="تحليل خاص (98% VIP) 👤"), KeyboardButton(text="تحليل فوري (90%+ ⚡️)")],
-            [KeyboardButton(text="تسجيل نتيجة صفقة 📝"), KeyboardButton(text="تقرير الأداء الأسبوعي 📊")],
+            [KeyboardButton(text="تسجيل نتيجة صفقة 📝"), KeyboardButton(text="تقرير الأداء الشخصي 📊")], # ⚠️ تغيير اسم الزر لتمييزه عن تقرير البوت
             [KeyboardButton(text="📊 جرد الصفقات اليومي"), KeyboardButton(text="📢 رسالة لكل المستخدمين")],
             [KeyboardButton(text="🔑 إنشاء مفتاح اشتراك"), KeyboardButton(text="🗒️ عرض حالة المشتركين")],
             [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء حظر مستخدم")],
@@ -1038,9 +1118,7 @@ def admin_menu():
         resize_keyboard=True
     )
 
-# ... (بقية دوال الأدمن: process_trade_pnl_after_entry, process_manual_trade_result, prompt_trade_result, show_weekly_report) تبقى كما هي ...
-
-# ⚠️ تم حذف دالتي تعديل رأس المال: prompt_new_capital و process_new_capital
+# ... (بقية دوال الأدمن: process_trade_pnl_after_entry, process_manual_trade_result, prompt_trade_result) تبقى كما هي ...
 
 @dp.message(AdminStates.waiting_trade_pnl)
 async def process_trade_pnl_after_entry(msg: types.Message, state: FSMContext):
@@ -1110,10 +1188,16 @@ async def prompt_trade_result(msg: types.Message, state: FSMContext):
     await state.set_state(AdminStates.waiting_trade_result_input)
     await msg.reply("يرجى إدخال ملخص نتيجة الصفقة اليدوية بالترتيب التالي (افصل بينهما بمسافة):\n**الرمز العمل اللوت الربح/الخسارة**\n\nمثال: `XAUT/USDT BUY 0.05 -2.50`")
 
-@dp.message(F.text == "تقرير الأداء الأسبوعي 📊")
-async def show_weekly_report(msg: types.Message):
+@dp.message(F.text == "تقرير الأداء الشخصي 📊") # ⚠️ الزر المُعدَّل
+async def show_weekly_report_admin(msg: types.Message):
     if msg.from_user.id != ADMIN_ID: return
     report = generate_weekly_performance_report()
+    await msg.reply(report, parse_mode="HTML")
+
+# ⚠️ التعديل المطلوب: دالة تقرير الأداء الأسبوعي للمستخدمين 
+@dp.message(F.text == "📊 تقرير الأداء الأسبوعي")
+async def show_weekly_report_user(msg: types.Message):
+    report = get_weekly_trade_performance()
     await msg.reply(report, parse_mode="HTML")
 
 
@@ -1142,30 +1226,19 @@ async def analyze_market_now(msg: types.Message):
         await msg.answer("🚫 هذه الميزة مخصصة للأدمن فقط.")
         return
     
-    # ⚠️ تستخدم CONFIDENCE_THRESHOLD_90 (90%) كحد أدنى و MIN_FILTERS_FOR_90 (6 فلاتر)
-    await msg.reply(f"⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول تتراوح ثقتها بين 90% و 98%...")
+    # ⚠️ تستخدم CONFIDENCE_THRESHOLD_90 (90%) كحد أدنى و MIN_FILTERS_FOR_90 (5 فلاتر)
+    await msg.reply(f"⏳ جارٍ تحليل السوق بحثًا عن فرصة تداول تتراوح ثقتها بين {int(CONFIDENCE_THRESHOLD_90 * 100)}% و {int(CONFIDENCE_THRESHOLD_98 * 100)}%...")
     
     price_info_msg, confidence, action, entry, sl, tp, sl_distance, trade_type, filters_passed = get_signal_and_confidence(TRADE_SYMBOL, MIN_FILTERS_FOR_90)
     confidence_percent = confidence * 100
-    threshold_percent = int(CONFIDENCE_THRESHOLD_90 * 100)
+    threshold_percent_90 = int(CONFIDENCE_THRESHOLD_90 * 100)
+    threshold_percent_98 = int(CONFIDENCE_THRESHOLD_98 * 100)
     
-    # التحقق من حالة البيانات أولا (رسالة الخطأ/البيانات غير الكافية)
-    if filters_passed < MIN_FILTERS_FOR_90 and action == "HOLD":
-        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}", parse_mode="HTML")
-        return
     
     # (1) إذا لم تتوفر إشارة أساساً أو الثقة غير كافية
     if action == "HOLD" or confidence < CONFIDENCE_THRESHOLD_90:
-         status_msg = f"""
-💡 **تقرير التحليل الفوري - XAUUSD**
-━━━━━━━━━━━━━━━
-🔎 **الإشارة الحالية:** {action}
-🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
-❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' or confidence < 0.1 else 'الثقة غير كافية للدخول')}
-━━━━━━━━━━━━━━━
-{price_info_msg}
-"""
-         await msg.answer(status_msg, parse_mode="HTML")
+         # ⚠️ التعديل: عرض عدد الفلاتر ونسبة الثقة المئوية (تم تعديل رسالة HOLD داخل get_signal_and_confidence)
+         await msg.answer(price_info_msg, parse_mode="HTML")
     
     # (2) إذا كانت الثقة كافية (90% أو أعلى)، لكن لم تصل لـ 98%
     elif confidence >= CONFIDENCE_THRESHOLD_90 and confidence < CONFIDENCE_THRESHOLD_98:
@@ -1184,7 +1257,8 @@ async def analyze_market_now(msg: types.Message):
 🛑 **STOP LOSS (SL):** ${sl:,.2f}
 ⚖️ **RISK/REWARD:** 1:{rr_factor_used:.1f} (SL/TP)
 ━━━━━━━━━━━━━━━
-**📊 ملاحظة:** هذه الإشارة للتنفيذ اليدوي الآن، وثقتها لم تصل لـ 98%.
+**📊 ملاحظة:** هذه الإشارة للتنفيذ اليدوي الآن، وثقتها لم تصل لـ {threshold_percent_98}%.
+{price_info_msg}
 """
          await msg.answer(trade_msg, parse_mode="HTML")
     
@@ -1211,25 +1285,11 @@ async def analyze_private_pair(msg: types.Message):
     confidence_percent = confidence * 100
     threshold_percent = int(TESTING_CONFIDENCE_THRESHOLD * 100)
     
-    # ⚠️ التحقق من حالة البيانات أولا
-    if filters_passed < MIN_FILTERS_FOR_98 and action == "HOLD":
-        await msg.answer(f"❌ فشل التحليل:\n{price_info_msg}", parse_mode="HTML")
-        return
-        
+    
     # ⚠️ المنطق المُعدَّل: إذا لم تتحقق الثقة المطلوبة (98%)، نظهر رسالة الـ HOLD الواضحة
     if action == "HOLD" or confidence < TESTING_CONFIDENCE_THRESHOLD:
-        status_msg = f"""
-💡 **التحليل الخاص - XAUUSD**
-━━━━━━━━━━━━━━━
-🔎 **الإشارة الحالية:** {action}
-🔒 **الثقة:** <b>{confidence_percent:.2f}%</b> (المطلوب: {threshold_percent}%)
-❌ **القرار:** {('لا توجد إشارة واضحة (HOLD)' if action == 'HOLD' or confidence < 0.1 else f'الثقة غير كافية للدخول (< {threshold_percent}%)')}
-━━━━━━━━━━━━━━━
-{price_info_msg}
-
-**📊 ملاحظة:** لم يتم توليد صفقة قوية لتجنب المخاطر.
-"""
-        await msg.answer(status_msg, parse_mode="HTML")
+        # ⚠️ التعديل: عرض عدد الفلاتر ونسبة الثقة المئوية (تم تعديل رسالة HOLD داخل get_signal_and_confidence)
+        await msg.answer(price_info_msg, parse_mode="HTML")
         return
     
     # إذا كانت الإشارة قوية وتجاوزت الثقة المطلوبة (هنا 98% أو أعلى)
@@ -1555,8 +1615,8 @@ async def about_bot(msg: types.Message):
     * **Scalping:** R:R 1:{SCALPING_RR_FACTOR:.1f} مع فلاتر 1m/5m/15m و ADX > {ADX_SCALPING_MIN}.
     * **Long-Term:** R:R 1:{LONGTERM_RR_FACTOR:.1f} مع فلاتر 15m/30m/1h و ADX > {ADX_LONGTERM_MIN}.
     
-2.  <b>إشارات سباعية التأكيد (7-Tier Confirmation):</b>
-    كل صفقة تُرسل يجب أن تمر بـ 7 فلاتر تحليلية (EMA, RSI, ADX, BB, SMA 200, توافق الأطر الزمنية, ATR ديناميكي).
+2.  <b>إشارات متعددة التأكيد ({MIN_FILTERS_FOR_98}-Tier Confirmation):</b>
+    كل صفقة تُرسل يجب أن تمر بـ {MIN_FILTERS_FOR_98} فلاتر تحليلية (EMA, RSI, ADX, BB, SMA 200, توافق الأطر الزمنية, ATR ديناميكي).
 
 3.  <b>عتبات الثقة:</b>
     * **الإرسال التلقائي:** لا يتم إرسال أي صفقة تلقائيًا إلا إذا تجاوزت الثقة **{threshold_percent_98}%** (يتطلب {MIN_FILTERS_FOR_98} فلاتر).
@@ -1571,7 +1631,7 @@ async def about_bot(msg: types.Message):
     await msg.reply(about_msg)
 
 # ===============================================
-# === دالة متابعة الصفقات (Trade Monitoring) (تم تحديث الرسالة) ===
+# === دالة متابعة الصفقات (Trade Monitoring) (تم تحديث الرسالة وإضافة إشعار الأدمن) ===
 # ===============================================
 
 async def check_open_trades():
@@ -1642,9 +1702,10 @@ async def check_open_trades():
                     except Exception:
                         pass
                         
+            # ⚠️ التعديل المطلوب: إرسال النتيجة للأدمن
             if ADMIN_ID != 0:
-                await bot.send_message(ADMIN_ID, f"🔔 تم إغلاق الصفقة **{trade_id}** بنجاح على: {exit_status}", parse_mode="HTML")
-
+                await notify_admin_trade_result(trade_id, action, exit_status, close_price, trade_type)
+                
 # ===============================================
 # === إعداد المهام المجدولة (Setup Scheduled Tasks) ===
 # ===============================================
