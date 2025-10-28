@@ -562,7 +562,7 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
             if len(df) >= 3:
                 return df
     except Exception as e:
-        print(f\"CCXT fetch failed ({CCXT_EXCHANGE}): {e}\")
+        print(f"CCXT fetch failed ({CCXT_EXCHANGE}): {e}")
     # --- Fallback to yfinance ---
     try:
         import yfinance as yf
