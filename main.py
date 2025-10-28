@@ -571,7 +571,7 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
         if 'XAU' in symbol.upper():
             yf_symbol = 'XAUUSD=X'
         period = '2d' if timeframe.endswith('m') else '5d'
-        interval = '1m' if timeframe == '1m' else ('5m' if timeframe == '5m' else '30m' if timeframe == \"30m\" else '60m')
+        interval = '1m' if timeframe == '1m' else ('5m' if timeframe == '5m' else '30m' if timeframe == "30m" else '60m')
         df_y = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False, threads=False)
         if df_y is None or df_y.empty:
             return pd.DataFrame()
@@ -580,7 +580,7 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
         df_y.index = pd.to_datetime(df_y.index).tz_localize(None)
         return df_y
     except Exception as e:
-        print(f\"yfinance fallback failed: {e}\")
+        print(f"yfinance fallback failed: {e}")
         return pd.DataFrame()\n\n    except Exception as e:
         print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}): {e}")
         return pd.DataFrame() 
@@ -602,7 +602,7 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
             return ticker.get('ask') or ticker.get('last') or ticker.get('close')
         return None
     except Exception as e:
-        print(f\"CCXT price fetch failed ({CCXT_EXCHANGE}): {e}\")
+        print(f"CCXT price fetch failed ({CCXT_EXCHANGE}): {e}")
     # yfinance fallback
     try:
         import yfinance as yf
@@ -615,7 +615,7 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
         last = t['Close'].iloc[-1]
         return float(last)
     except Exception as e:
-        print(f\"yfinance price fetch failed: {e}\")
+        print(f"yfinance price fetch failed: {e}")
         return None\n
 # =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) (تم تعديلها) ===============
 class AccessMiddleware(BaseMiddleware):
