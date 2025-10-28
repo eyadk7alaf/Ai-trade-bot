@@ -415,8 +415,8 @@ def get_daily_trade_report():
     if latest_active:
         action, _, _, entry, tp, sl, _, trade_type = latest_active
         trade_type_msg = "سريع" if trade_type == "SCALPING" else "طويل"
-        report_msg += "\n**آخر صفقة نشطة:**\n"
-        report_msg += f"  - {action} @ {entry:,.2f} ({trade_type_msg})\n"
+        report_msg += "**آخر صفقة نشطة:**"
+        report_msg += f"  - {action} @ {entry:,.2f} ({trade_type_msg})"
         report_msg += f"  - TP: {tp:,.2f} | SL: {sl:,.2f}"
 
     return report_msg
@@ -496,19 +496,19 @@ def generate_weekly_performance_report():
 💵 **رأس مال اليوم:** ${current_capital:,.2f}
 """
     if current_capital >= start_capital:
-        report += f"🟢 **صافي الربح/الخسارة:** ${total_profit:,.2f}\n"
+        report += f"🟢 **صافي الربح/الخسارة:** ${total_profit:,.2f}"
         report += f"📊 **نسبة النمو:** <b>+{percentage_gain:.2f}%</b>"
     else:
-        report += f"🔴 **صافي الربح/الخسارة:** ${total_profit:,.2f}\n"
+        report += f"🔴 **صافي الربح/الخسارة:** ${total_profit:,.2f}"
         report += f"📊 **نسبة التراجع:** <b>{percentage_gain:.2f}%</b>"
 
     if trades:
         successful_trades = sum(1 for t in trades if t[0] > 0)
         losing_trades = sum(1 for t in trades if t[0] <= 0)
-        report += f"\n\n✅ **الصفقات الرابحة:** {successful_trades}\n"
+        report += f"✅ **الصفقات الرابحة:** {successful_trades}"
         report += f"❌ **الصفقات الخاسرة:** {losing_trades}"
     else:
-        report += "\n\n⚠️ لم يتم تسجيل أي صفقات خاصة خلال هذه الفترة."
+        report += "⚠️ لم يتم تسجيل أي صفقات خاصة خلال هذه الفترة."
     return report
     
 def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tuple[float, str]:
@@ -581,7 +581,7 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
         return df_y
     except Exception as e:
         print(f"yfinance fallback failed: {e}")
-        return pd.DataFrame()\n\n    except Exception as e:
+        return pd.DataFrame()    except Exception as e:
         print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}): {e}")
         return pd.DataFrame() 
 
@@ -616,7 +616,7 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
         return float(last)
     except Exception as e:
         print(f"yfinance price fetch failed: {e}")
-        return None\n
+        return None
 # =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) (تم تعديلها) ===============
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
@@ -1044,7 +1044,7 @@ async def send_vip_trade_signal_98():
             
             # إرسال إشعار للأدمن (تأكيد أن الصفقة أُرسلت)
             if ADMIN_ID != 0:
-                 await bot.send_message(ADMIN_ID, f"🔔 **تم إرسال إشارة VIP تلقائية بنجاح!**\nID: {trade_id}\n{trade_msg}", parse_mode="HTML")
+                 await bot.send_message(ADMIN_ID, f"🔔 **تم إرسال إشارة VIP تلقائية بنجاح!**ID: {trade_id}{trade_msg}", parse_mode="HTML")
                  
     elif action != "HOLD":
          print(f"⚠️ تم العثور على إشارة {action} ({trade_type})، لكن الثقة {confidence_percent:.2f}% لم تصل إلى المطلوب {CONFIDENCE_THRESHOLD_98*100:.0f}%.")
@@ -1163,7 +1163,7 @@ async def process_trade_pnl_after_entry(msg: types.Message, state: FSMContext):
         await state.clear()
         
         await msg.reply(
-            f"✅ تم تسجيل نتيجة الصفقة بنجاح: **${pnl:,.2f}**.\n"
+            f"✅ تم تسجيل نتيجة الصفقة بنجاح: **${pnl:,.2f}**."
             f"💰 رأس مالك الحالي أصبح: **${new_capital:,.2f}**.",
             reply_markup=admin_menu()
         )
@@ -1195,7 +1195,7 @@ async def process_manual_trade_result(msg: types.Message, state: FSMContext):
         display_symbol = "XAUUSD" 
         
         await msg.reply(
-            f"✅ تم تسجيل الصفقة اليدوية: {h(display_symbol)} ({action})، PnL: ${pnl:,.2f}.\n"
+            f"✅ تم تسجيل الصفقة اليدوية: {h(display_symbol)} ({action})، PnL: ${pnl:,.2f}."
             f"💰 رأس مالك الحالي أصبح: **${new_capital:,.2f}**.",
             reply_markup=admin_menu()
         )
@@ -1212,7 +1212,7 @@ async def prompt_trade_result(msg: types.Message, state: FSMContext):
          return
          
     await state.set_state(AdminStates.waiting_trade_result_input)
-    await msg.reply("يرجى إدخال ملخص نتيجة الصفقة اليدوية بالترتيب التالي (افصل بينهما بمسافة):\n**الرمز العمل اللوت الربح/الخسارة**\n\nمثال: `XAUT/USDT BUY 0.05 -2.50`")
+    await msg.reply("يرجى إدخال ملخص نتيجة الصفقة اليدوية بالترتيب التالي (افصل بينهما بمسافة):**الرمز العمل اللوت الربح/الخسارة**مثال: `XAUT/USDT BUY 0.05 -2.50`")
 
 @dp.message(F.text == "تقرير الأداء الشخصي 📊") # ⚠️ الزر المُعدَّل
 async def show_weekly_report_admin(msg: types.Message):
@@ -1290,7 +1290,7 @@ async def analyze_market_now(msg: types.Message):
     
     # (3) إذا كانت الثقة 98% (نادر الحدوث هنا لكنه ممكن)
     elif confidence >= CONFIDENCE_THRESHOLD_98:
-         await msg.answer(f"✅ تم إيجاد إشارة فائقة القوة ({action}) ({trade_type}) على XAUUSD!\nنسبة الثقة: <b>{confidence_percent:.2f}%</b>.\n**تم إرسال الإشارة التلقائية لـ VIP إذا لم تكن هناك صفقات نشطة.**", parse_mode="HTML")
+         await msg.answer(f"✅ تم إيجاد إشارة فائقة القوة ({action}) ({trade_type}) على XAUUSD!نسبة الثقة: <b>{confidence_percent:.2f}%</b>.**تم إرسال الإشارة التلقائية لـ VIP إذا لم تكن هناك صفقات نشطة.**", parse_mode="HTML")
 
 # ----------------------------------------------------------------------------------
 
@@ -1501,7 +1501,7 @@ async def display_user_status(msg: types.Message):
         await msg.reply("لا يوجد مستخدمون مسجلون حالياً.")
         return
 
-    report = "📋 **تقرير حالة آخر 20 مستخدماً**\n\n"
+    report = "📋 **تقرير حالة آخر 20 مستخدماً**"
     
     for user_id, username, is_banned, vip_until in users:
         ban_status = "❌ محظور" if is_banned == 1 else "✅ نشط"
@@ -1511,9 +1511,9 @@ async def display_user_status(msg: types.Message):
         else:
             vip_status = "🔸 مجاني/انتهى"
             
-        report += f"👤 ID: {user_id}\n"
-        report += f"  - اليوزر: @{h(username) if username else 'لا يوجد'}\n"
-        report += f"  - الحالة: {ban_status} / {vip_status}\n\n"
+        report += f"👤 ID: {user_id}"
+        report += f"  - اليوزر: @{h(username) if username else 'لا يوجد'}"
+        report += f"  - الحالة: {ban_status} / {vip_status}"
         
     await msg.reply(report, parse_mode="HTML")
 
@@ -1525,7 +1525,7 @@ async def get_current_price(msg: types.Message):
     DISPLAY_SYMBOL = "XAUUSD" 
 
     if current_price is not None:
-        price_msg = f"📊 السعر الحالي لـ <b>{h(DISPLAY_SYMBOL)}</b> (المصدر: {h(CCXT_EXCHANGE)}):\nالسعر: <b>${current_price:,.2f}</b>\nالوقت: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
+        price_msg = f"📊 السعر الحالي لـ <b>{h(DISPLAY_SYMBOL)}</b> (المصدر: {h(CCXT_EXCHANGE)}):السعر: <b>${current_price:,.2f}</b>الوقت: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
         await msg.reply(price_msg, parse_mode="HTML")
     else:
         await msg.reply(f"❌ فشل جلب السعر اللحظي لـ {h(DISPLAY_SYMBOL)} من {h(CCXT_EXCHANGE)}. يرجى المحاولة لاحقاً.")
@@ -1539,7 +1539,7 @@ async def show_active_trades(msg: types.Message):
         await msg.reply("✅ لا توجد حاليًا أي صفقات VIP نشطة. انتظر إشارة قادمة!")
         return
     
-    report = "⏳ **قائمة الصفقات النشطة حالياً (XAUUSD)**\n━━━━━━━━━━━━━━━"
+    report = "⏳ **قائمة الصفقات النشطة حالياً (XAUUSD)**━━━━━━━━━━━━━━━"
     
     for trade in active_trades:
         trade_id = trade['trade_id']
@@ -1563,9 +1563,9 @@ async def show_active_trades(msg: types.Message):
 async def show_subscription_status(msg: types.Message):
     status = get_user_vip_status(msg.from_user.id)
     if status == "غير مشترك":
-        await msg.reply(f"⚠️ أنت حالياً **غير مشترك** في خدمة VIP.\nللاشتراك، اطلب مفتاح تفعيل من الأدمن (@{h(ADMIN_USERNAME)}) ثم اضغط '🔗 تفعيل مفتاح الاشتراك'.")
+        await msg.reply(f"⚠️ أنت حالياً **غير مشترك** في خدمة VIP.للاشتراك، اطلب مفتاح تفعيل من الأدمن (@{h(ADMIN_USERNAME)}) ثم اضغط '🔗 تفعيل مفتاح الاشتراك'.")
     else:
-        await msg.reply(f"✅ أنت مشترك في خدمة VIP.\nالاشتراك ينتهي في: <b>{status}</b>.")
+        await msg.reply(f"✅ أنت مشترك في خدمة VIP.الاشتراك ينتهي في: <b>{status}</b>.")
 
 @dp.message(F.text == "🔗 تفعيل مفتاح الاشتراك")
 async def prompt_key_activation(msg: types.Message, state: FSMContext):
@@ -1581,7 +1581,7 @@ async def process_key_activation(msg: types.Message, state: FSMContext):
     
     if success:
         formatted_date = new_vip_until.strftime('%Y-%m-%d %H:%M') if new_vip_until else "غير محدد"
-        await msg.reply(f"🎉 تم تفعيل مفتاح الاشتراك بنجاح!\n✅ تمت إضافة {days} يوم/أيام إلى اشتراكك.\nالاشتراك الجديد ينتهي في: <b>{formatted_date}</b>.", reply_markup=user_menu())
+        await msg.reply(f"🎉 تم تفعيل مفتاح الاشتراك بنجاح!✅ تمت إضافة {days} يوم/أيام إلى اشتراكك.الاشتراك الجديد ينتهي في: <b>{formatted_date}</b>.", reply_markup=user_menu())
     else:
         await msg.reply("❌ فشل تفعيل المفتاح. يرجى التأكد من صحة المفتاح وأنه لم يُستخدم من قبل.", reply_markup=user_menu())
 
@@ -1760,7 +1760,7 @@ async def weekend_alert_checker():
         # 1. رسالة الإغلاق (الجمعة 21:00 UTC)
         if now_utc.weekday() == 4 and now_utc.hour >= 21 and not WEEKEND_CLOSURE_ALERT_SENT:
             if not is_weekend_closure(): # للتأكد من أنها أول مرة تدخل فترة الإغلاق
-                alert_msg = "😴 **إغلاق السوق (عطلة نهاية الأسبوع)!** 😴\n\nتم إيقاف جميع تحليلات وإشارات AlphaTradeAI حتى فتح السوق يوم الأحد (21:00 UTC). نراكم على خير!"
+                alert_msg = "😴 **إغلاق السوق (عطلة نهاية الأسبوع)!** 😴تم إيقاف جميع تحليلات وإشارات AlphaTradeAI حتى فتح السوق يوم الأحد (21:00 UTC). نراكم على خير!"
                 
                 all_vip_users = get_all_users_ids(vip_only=True)
                 for uid, _ in all_vip_users:
@@ -1778,7 +1778,7 @@ async def weekend_alert_checker():
         # 2. رسالة الفتح (الأحد 21:00 UTC)
         elif now_utc.weekday() == 6 and now_utc.hour >= 21 and not WEEKEND_OPENING_ALERT_SENT:
             if not is_weekend_closure(): # للتأكد من أنها أول مرة تخرج من فترة الإغلاق
-                alert_msg = "🔔 **فتح السوق! هيا بنا!** 🔔\n\nتم استئناف تحليل وإشارات AlphaTradeAI. ترقبوا الإشارة القادمة!"
+                alert_msg = "🔔 **فتح السوق! هيا بنا!** 🔔تم استئناف تحليل وإشارات AlphaTradeAI. ترقبوا الإشارة القادمة!"
 
                 all_vip_users = get_all_users_ids(vip_only=True)
                 for uid, _ in all_vip_users:
