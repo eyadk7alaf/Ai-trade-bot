@@ -20,6 +20,21 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
 
+
+# Symbol mappings to adapt between exchange and Yahoo tickers
+BINANCE_SYMBOL_MAPPING = {
+    "XAUUSD": "XAU/USDT",
+    "GOLD": "XAU/USDT",
+    # add more mappings if needed
+}
+
+# Yahoo Finance mapping (ensure exists)
+YF_SYMBOL_MAPPING = globals().get('YF_SYMBOL_MAPPING', {
+    "XAUUSD": "XAUUSD=X",
+    "GOLD": "GC=F",
+})
+
+
 # =============== تعريف حالات FSM المُعدَّلة ===============
 class AdminStates(StatesGroup):
     waiting_broadcast = State()
@@ -563,22 +578,51 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
                 return df
     except Exception as e:
         print(f"CCXT fetch failed ({CCXT_EXCHANGE}): {e}")
-    # --- Fallback to yfinance ---
+    
+# --- Fallback to yfinance ---
     try:
         import yfinance as yf
-        yf_symbol = symbol
-        # If symbol like XAUT/USDT or XAU/USDT, use Yahoo ticker XAUUSD=X
-        if 'XAU' in symbol.upper():
-            yf_symbol = 'XAUUSD=X'
+        yf_symbol = YF_SYMBOL_MAPPING.get(symbol.upper(), symbol)
         period = '2d' if timeframe.endswith('m') else '5d'
         interval = '1m' if timeframe == '1m' else ('5m' if timeframe == '5m' else '30m' if timeframe == "30m" else '60m')
-        df_y = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False, threads=False)
-        if df_y is None or df_y.empty:
-            return pd.DataFrame()
-        df_y = df_y.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close','Volume':'Volume'})[['Open','High','Low','Close','Volume']]
-        # Ensure index is timezone-naive datetime
-        df_y.index = pd.to_datetime(df_y.index).tz_localize(None)
-        return df_y
+        try:
+            df_y = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False, threads=False, auto_adjust=False)
+            if df_y is not None and not df_y.empty:
+                df_y = df_y.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close','Volume':'Volume'})[['Open','High','Low','Close','Volume']]
+                df_y.index = pd.to_datetime(df_y.index).tz_localize(None)
+                return df_y
+            else:
+                print(f"⚠️ yfinance returned no data for {yf_symbol} (period={period}, interval={interval})")
+        except Exception as e:
+            print(f"⚠️ yfinance primary download failed for {yf_symbol}: {e}")
+
+        env_fb = os.getenv('YF_FALLBACK_SYMBOL','').strip()
+        if env_fb:
+            try:
+                df_y = yf.download(tickers=env_fb, period=period, interval=interval, progress=False, threads=False, auto_adjust=False)
+                if df_y is not None and not df_y.empty:
+                    print(f"✅ using YF_FALLBACK_SYMBOL {env_fb}")
+                    df_y = df_y.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close','Volume':'Volume'})[['Open','High','Low','Close','Volume']]
+                    df_y.index = pd.to_datetime(df_y.index).tz_localize(None)
+                    return df_y
+            except Exception as e:
+                print(f"⚠️ yfinance env fallback failed for {env_fb}: {e}")
+
+        for alt in ['GC=F','XAU=X','XAUUSD=X']:
+            if alt == yf_symbol:
+                continue
+            try:
+                df_y = yf.download(tickers=alt, period=period, interval=interval, progress=False, threads=False, auto_adjust=False)
+                if df_y is not None and not df_y.empty:
+                    print(f"✅ using alternative yf symbol {alt}")
+                    df_y = df_y.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close','Volume':'Volume'})[['Open','High','Low','Close','Volume']]
+                    df_y.index = pd.to_datetime(df_y.index).tz_localize(None)
+                    return df_y
+            except Exception as e:
+                print(f"⚠️ yfinance alt {alt} failed: {e}")
+
+        print(f"❌ No data found for {symbol} via yfinance (tried mapping, env fallback and alternatives)")
+        return pd.DataFrame()
     except Exception as e:
         print(f"yfinance fallback failed: {e}")
         return pd.DataFrame()
@@ -587,39 +631,108 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
         print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}): {e}")
         return pd.DataFrame() 
 
+
 def fetch_current_price_ccxt(symbol: str) -> float or None:
-    """جلب السعر الحالي الفوري. محاولة CCXT أولاً، ثم yfinance كنسخة احتياطية."""
+    """Robust current price fetch:
+    1) Try CCXT exchange (CCXT_EXCHANGE env, e.g., 'binance') with BINANCE_SYMBOL_MAPPING
+    2) Try yfinance with YF_SYMBOL_MAPPING
+    3) Try environment fallback YF_FALLBACK_SYMBOL
+    4) Try alternative tickers ['GC=F','XAU=X','XAUUSD=X']
+    Returns float price or None.
+    """
+    # Normalize symbol inputs
+    try:
+        import yfinance as yf  # local import allowed here
+    except Exception:
+        yf = None
+
+    # 1) Try CCXT (exchange) first
     try:
         api_key = os.getenv("BYBIT_API_KEY", "")
         secret = os.getenv("BYBIT_SECRET", "")
-        exchange_name = CCXT_EXCHANGE.lower() if CCXT_EXCHANGE else "binance"
-        exchange_class = getattr(ccxt, exchange_name)
+        exchange_name = (CCXT_EXCHANGE or os.getenv('CCXT_EXCHANGE', 'binance')).lower() if 'CCXT_EXCHANGE' in globals() else os.getenv('CCXT_EXCHANGE', 'binance')
+        try:
+            exchange_class = getattr(ccxt, exchange_name)
+        except Exception:
+            exchange_class = getattr(ccxt, 'binance')
         exchange_config = {}
         if api_key and secret and exchange_name in ('bybit', 'bybitus', 'bybittest'):
             exchange_config = {'apiKey': api_key, 'secret': secret}
-        exchange = exchange_class(exchange_config) if exchange_config else exchange_class()
-        exchange.load_markets()
-        ticker = exchange.fetch_ticker(symbol)
-        if isinstance(ticker, dict):
-            return ticker.get('ask') or ticker.get('last') or ticker.get('close')
-        return None
+        try:
+            exchange = exchange_class(exchange_config) if exchange_config else exchange_class()
+        except Exception:
+            exchange = exchange_class()
+        # translate symbol for exchange, e.g., XAUUSD -> XAU/USDT
+        ex_sym = BINANCE_SYMBOL_MAPPING.get(symbol.upper(), symbol)
+        try:
+            # some exchanges expect different separators
+            ticker = None
+            try:
+                ticker = exchange.fetch_ticker(ex_sym)
+            except Exception:
+                # try variations
+                alt = ex_sym.replace('/', '')
+                try:
+                    ticker = exchange.fetch_ticker(alt)
+                except Exception:
+                    pass
+            if ticker:
+                # ccxt may return dict-like or object
+                if isinstance(ticker, dict):
+                    price = ticker.get('last') or ticker.get('close') or ticker.get('ask') or ticker.get('bid')
+                    if price:
+                        return float(price)
+                else:
+                    # best-effort
+                    try:
+                        return float(ticker['last'])
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"⚠️ CCXT fetch attempt failed for {ex_sym}: {e}")
     except Exception as e:
-        print(f"CCXT price fetch failed ({CCXT_EXCHANGE}): {e}")
-    # yfinance fallback
-    try:
-        import yfinance as yf
-        yf_symbol = symbol
-        if 'XAU' in symbol.upper():
-            yf_symbol = 'XAUUSD=X'
-        t = yf.Ticker(yf_symbol).history(period='1d', interval='1m')
-        if t is None or t.empty:
-            return None
-        last = t['Close'].iloc[-1]
-        return float(last)
-    except Exception as e:
-        print(f"yfinance price fetch failed: {e}")
-        return None
+        print(f"⚠️ CCXT top-level error: {e}")
 
+    # 2) Try yfinance mapping
+    try:
+        if yf is None:
+            import yfinance as yf
+        yf_sym = YF_SYMBOL_MAPPING.get(symbol.upper(), symbol)
+        try:
+            df = yf.download(tickers=yf_sym, period='1d', interval='1m', progress=False, threads=False, auto_adjust=False)
+            if df is not None and not df.empty:
+                return float(df['Close'].iloc[-1])
+            else:
+                print(f"⚠️ yfinance returned no data for {yf_sym}")
+        except Exception as e:
+            print(f"⚠️ yfinance primary failed for {yf_sym}: {e}")
+        # 3) env fallback
+        env_fb = os.getenv('YF_FALLBACK_SYMBOL', '').strip()
+        if env_fb:
+            try:
+                df2 = yf.download(tickers=env_fb, period='1d', interval='1m', progress=False, threads=False, auto_adjust=False)
+                if df2 is not None and not df2.empty:
+                    print(f"✅ Using YF_FALLBACK_SYMBOL {env_fb}")
+                    return float(df2['Close'].iloc[-1])
+            except Exception as e:
+                print(f"⚠️ yfinance env fallback failed for {env_fb}: {e}")
+        # 4) try alternatives
+        for alt in ['GC=F', 'XAU=X', 'XAUUSD=X']:
+            if alt == yf_sym:
+                continue
+            try:
+                df3 = yf.download(tickers=alt, period='1d', interval='1m', progress=False, threads=False, auto_adjust=False)
+                if df3 is not None and not df3.empty:
+                    print(f"✅ using alternative yf symbol {alt}")
+                    return float(df3['Close'].iloc[-1])
+            except Exception as e:
+                print(f"⚠️ yfinance alt {alt} failed: {e}")
+    except Exception as e:
+        print(f"⚠️ yfinance section failed: {e}")
+
+    # final: nothing worked
+    print("❌ Unable to fetch current price from CCXT/yfinance for symbol: {0}".format(symbol))
+    return None
 # =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) (تم تعديلها) ===============
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
@@ -1129,7 +1242,7 @@ def user_menu():
             [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="🔍 الصفقات النشطة")],
             [KeyboardButton(text="🔗 تفعيل مفتاح الاشتراك"), KeyboardButton(text="📝 حالة الاشتراك")],
             [KeyboardButton(text="💰 خطة الأسعار VIP"), KeyboardButton(text="💬 تواصل مع الدعم")],
-            [KeyboardButton(text="ℹ️ عن AlphaTradeAI"), KeyboardButton(text="📊 تقرير الأداء الأسبوعي")] # ⚠️ التعديل المطلوب: إضافة زر التقرير الأسبوعي
+            [KeyboardButton(text="ℹ️ عن AlphaTradeAI"), ] # ⚠️ التعديل المطلوب: إضافة زر التقرير الأسبوعي
         ],
         resize_keyboard=True
     )
@@ -1138,8 +1251,9 @@ def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="تحليل خاص (98% VIP) 👤"), KeyboardButton(text="تحليل فوري (90%+ ⚡️)")],
-            [KeyboardButton(text="تسجيل نتيجة صفقة 📝"), KeyboardButton(text="تقرير الأداء الشخصي 📊")], # ⚠️ تغيير اسم الزر لتمييزه عن تقرير البوت
+            [KeyboardButton(text="تقرير الأداء الشخصي 📊")], # ⚠️ تغيير اسم الزر لتمييزه عن تقرير البوت
             [KeyboardButton(text="📊 جرد الصفقات اليومي"), KeyboardButton(text="📢 رسالة لكل المستخدمين")],
+            [KeyboardButton(text="📊 تقرير الأداء الأسبوعي"), KeyboardButton(text="🔑 إنشاء مفتاح اشتراك")],
             [KeyboardButton(text="🔑 إنشاء مفتاح اشتراك"), KeyboardButton(text="🗒️ عرض حالة المشتركين")],
             [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء حظر مستخدم")],
             [KeyboardButton(text="👥 عدد المستخدمين"), KeyboardButton(text="🔙 عودة للمستخدم")]
