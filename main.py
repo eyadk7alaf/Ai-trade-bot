@@ -24,11 +24,30 @@ from typing import Callable, Dict, Any, Awaitable
 # Symbol mappings to adapt between exchange and Yahoo tickers
 BINANCE_SYMBOL_MAPPING = {
     "XAUUSD": "XAU/USDT",
+    "XAUT": "XAU/USDT",
+    "XAUT/USDT": "XAU/USDT",
+    "XAUUSD/X": "XAU/USDT",
     "GOLD": "XAU/USDT",
     # add more mappings if needed
 }
 
 # Yahoo Finance mapping (ensure exists)
+
+
+def safe_confidence_ratio(passed: int, total: int) -> float:
+    """Return confidence percentage (0-100). Avoid division by zero and provide fallback logic."""
+    try:
+        if total <= 0:
+            # no filters; treat as 0.0 confidence but avoid division by zero
+            return 0.0
+        val = (passed / total) * 100.0
+        # clamp
+        if val < 0: val = 0.0
+        if val > 100: val = 100.0
+        return round(val, 2)
+    except Exception:
+        return 0.0
+
 YF_SYMBOL_MAPPING = globals().get('YF_SYMBOL_MAPPING', {
     "XAUUSD": "XAUUSD=X",
     "GOLD": "GC=F",
@@ -632,29 +651,43 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
         return pd.DataFrame() 
 
 
+
 def fetch_current_price_ccxt(symbol: str) -> float or None:
-    """Robust current price fetch:
-    1) Try CCXT exchange (CCXT_EXCHANGE env, e.g., 'binance') with BINANCE_SYMBOL_MAPPING
-    2) Try yfinance with YF_SYMBOL_MAPPING
-    3) Try environment fallback YF_FALLBACK_SYMBOL
-    4) Try alternative tickers ['GC=F','XAU=X','XAUUSD=X']
-    Returns float price or None.
-    """
-    # Normalize symbol inputs
+    """Robust current price fetch with multiple exchange symbol attempts and retries."""
     try:
-        import yfinance as yf  # local import allowed here
+        import yfinance as yf
     except Exception:
         yf = None
 
-    # 1) Try CCXT (exchange) first
+    # prepare exchange name and class
+    exchange_name = (CCXT_EXCHANGE or os.getenv('CCXT_EXCHANGE', 'binance')).lower() if 'CCXT_EXCHANGE' in globals() else os.getenv('CCXT_EXCHANGE', 'binance')
+    try:
+        exchange_class = getattr(ccxt, exchange_name)
+    except Exception:
+        exchange_class = getattr(ccxt, 'binance')
+
+    # prepare candidate symbols for exchange
+    ex_candidates = []
+    # canonical mapping if available
+    ex_candidates.append(BINANCE_SYMBOL_MAPPING.get(symbol.upper(), symbol))
+    # common transformations
+    sym_up = symbol.upper()
+    if sym_up.endswith('USD'):
+        ex_candidates.append(sym_up.replace('USD', '/USDT'))
+        ex_candidates.append(sym_up.replace('USD', '/USDC'))
+    ex_candidates.append(sym_up + '/USDT')
+    ex_candidates.append(sym_up + '/USDC')
+    # some tickers might be 'XAUT' etc.
+    if sym_up.startswith('XAU') and 'XAU/USDT' not in ex_candidates:
+        ex_candidates.append('XAU/USDT')
+        ex_candidates.append('XAUT/USDT')
+    # deduplicate while preserving order
+    seen = set(); ex_candidates = [x for x in ex_candidates if x and not (x in seen or seen.add(x))]
+
+    # 1) Try CCXT candidates with small retry
     try:
         api_key = os.getenv("BYBIT_API_KEY", "")
         secret = os.getenv("BYBIT_SECRET", "")
-        exchange_name = (CCXT_EXCHANGE or os.getenv('CCXT_EXCHANGE', 'binance')).lower() if 'CCXT_EXCHANGE' in globals() else os.getenv('CCXT_EXCHANGE', 'binance')
-        try:
-            exchange_class = getattr(ccxt, exchange_name)
-        except Exception:
-            exchange_class = getattr(ccxt, 'binance')
         exchange_config = {}
         if api_key and secret and exchange_name in ('bybit', 'bybitus', 'bybittest'):
             exchange_config = {'apiKey': api_key, 'secret': secret}
@@ -662,38 +695,42 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
             exchange = exchange_class(exchange_config) if exchange_config else exchange_class()
         except Exception:
             exchange = exchange_class()
-        # translate symbol for exchange, e.g., XAUUSD -> XAU/USDT
-        ex_sym = BINANCE_SYMBOL_MAPPING.get(symbol.upper(), symbol)
-        try:
-            # some exchanges expect different separators
-            ticker = None
+
+        for ex_sym in ex_candidates:
+            if not ex_sym: 
+                continue
             try:
-                ticker = exchange.fetch_ticker(ex_sym)
-            except Exception:
-                # try variations
-                alt = ex_sym.replace('/', '')
-                try:
-                    ticker = exchange.fetch_ticker(alt)
-                except Exception:
-                    pass
-            if ticker:
-                # ccxt may return dict-like or object
-                if isinstance(ticker, dict):
-                    price = ticker.get('last') or ticker.get('close') or ticker.get('ask') or ticker.get('bid')
-                    if price:
-                        return float(price)
-                else:
-                    # best-effort
+                # try a couple of variations
+                for attempt in range(2):
                     try:
-                        return float(ticker['last'])
-                    except Exception:
-                        pass
-        except Exception as e:
-            print(f"⚠️ CCXT fetch attempt failed for {ex_sym}: {e}")
+                        ticker = exchange.fetch_ticker(ex_sym)
+                        break
+                    except Exception as e:
+                        # try small modifications then retry
+                        alt = ex_sym.replace('/', '')
+                        try:
+                            ticker = exchange.fetch_ticker(alt)
+                            break
+                        except Exception:
+                            ticker = None
+                    time.sleep(0.1)
+                if ticker:
+                    if isinstance(ticker, dict):
+                        price = ticker.get('last') or ticker.get('close') or ticker.get('ask') or ticker.get('bid')
+                        if price:
+                            return float(price)
+                    else:
+                        try:
+                            return float(ticker['last'])
+                        except Exception:
+                            pass
+            except Exception as e:
+                # catch JSON decode or other errors and continue to next candidate
+                print(f"⚠️ Failed to get ticker '{ex_sym}' reason: {e}")
     except Exception as e:
         print(f"⚠️ CCXT top-level error: {e}")
 
-    # 2) Try yfinance mapping
+    # 2) yfinance fallback and env fallback (unchanged logic)
     try:
         if yf is None:
             import yfinance as yf
@@ -704,9 +741,12 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
                 return float(df['Close'].iloc[-1])
             else:
                 print(f"⚠️ yfinance returned no data for {yf_sym}")
+        except RuntimeError as ye:
+            # handle Yahoo servicedown message gracefully
+            print(f"⚠️ yfinance runtime error for {yf_sym}: {ye}")
         except Exception as e:
             print(f"⚠️ yfinance primary failed for {yf_sym}: {e}")
-        # 3) env fallback
+
         env_fb = os.getenv('YF_FALLBACK_SYMBOL', '').strip()
         if env_fb:
             try:
@@ -716,7 +756,7 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
                     return float(df2['Close'].iloc[-1])
             except Exception as e:
                 print(f"⚠️ yfinance env fallback failed for {env_fb}: {e}")
-        # 4) try alternatives
+
         for alt in ['GC=F', 'XAU=X', 'XAUUSD=X']:
             if alt == yf_sym:
                 continue
@@ -730,9 +770,9 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
     except Exception as e:
         print(f"⚠️ yfinance section failed: {e}")
 
-    # final: nothing worked
     print("❌ Unable to fetch current price from CCXT/yfinance for symbol: {0}".format(symbol))
     return None
+
 # =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) (تم تعديلها) ===============
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
