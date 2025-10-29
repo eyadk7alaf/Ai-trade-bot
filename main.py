@@ -20,13 +20,6 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
 
-# Yahoo Finance symbol mapping to avoid guessing tickers
-YF_SYMBOL_MAPPING = {
-    "XAUUSD": "XAUUSD=X",
-    "GOLD": "GC=F",
-}
-
-
 # =============== تعريف حالات FSM المُعدَّلة ===============
 class AdminStates(StatesGroup):
     waiting_broadcast = State()
@@ -401,14 +394,15 @@ def get_daily_trade_report():
     trades = cursor.fetchall()
     conn.close()
 
+    total_sent = len(trades)
+    active_trades = sum(1 for t in trades if t[1] == 'ACTIVE')
+    hit_tp = sum(1 for t in trades if t[2] == 'HIT_TP')
+    hit_sl = sum(1 for t in trades if t[2] == 'HIT_SL')
     
-total_sent = len(trades)
-if total_sent == 0:
-    return "⚠️ لم يتم إرسال أي صفقات خلال الـ 24 ساعة الماضية."
-active_trades = sum(1 for t in trades if (t[1] if len(t)>1 else 'UNKNOWN') == 'ACTIVE')
-hit_tp = sum(1 for t in trades if (t[2] if len(t)>2 else None) == 'HIT_TP')
-hit_sl = sum(1 for t in trades if (t[2] if len(t)>2 else None) == 'HIT_SL')
-report_msg = f"""
+    if total_sent == 0:
+        return "⚠️ لم يتم إرسال أي صفقات خلال الـ 24 ساعة الماضية."
+        
+    report_msg = f"""
 📈 **جرد أداء AlphaTradeAI (آخر 24 ساعة)**
 ━━━━━━━━━━━━━━━
 📨 **إجمالي الصفقات المُرسلة:** {total_sent}
@@ -568,76 +562,33 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
             if len(df) >= 3:
                 return df
     except Exception as e:
-        print(f\"CCXT fetch failed ({CCXT_EXCHANGE}): {e}\")
-    
-# --- Fallback to yfinance ---
-try:
-    import yfinance as yf
-    yf_symbol = YF_SYMBOL_MAPPING.get(symbol.upper(), symbol)
-    period = '2d' if timeframe.endswith('m') else '5d'
-    interval = '1m' if timeframe == '1m' else ('5m' if timeframe == '5m' else '30m' if timeframe == "30m" else '60m')
-    # primary attempt
+        print(f"CCXT fetch failed ({CCXT_EXCHANGE}): {e}")
+    # --- Fallback to yfinance ---
     try:
-        df_y = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False, threads=False, auto_adjust=False)
-        if df_y is not None and not df_y.empty:
-            df_y = df_y.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close','Volume':'Volume'})[['Open','High','Low','Close','Volume']]
-            df_y.index = pd.to_datetime(df_y.index).tz_localize(None)
-            return df_y
-        else:
-            print(f"⚠️ yfinance returned no data for {yf_symbol} (period={period}, interval={interval})")
-    except Exception as e:
-        print(f"⚠️ yfinance primary download failed for {yf_symbol}: {e}")
-
-    # try env fallback symbol
-    env_fallback = os.getenv('YF_FALLBACK_SYMBOL', '').strip()
-    if env_fallback:
-        try:
-            df_y = yf.download(tickers=env_fallback, period=period, interval=interval, progress=False, threads=False, auto_adjust=False)
-            if df_y is not None and not df_y.empty:
-                print(f"✅ using YF_FALLBACK_SYMBOL {env_fallback}")
-                df_y = df_y.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close','Volume':'Volume'})[['Open','High','Low','Close','Volume']]
-                df_y.index = pd.to_datetime(df_y.index).tz_localize(None)
-                return df_y
-        except Exception as e:
-            print(f"⚠️ yfinance env fallback failed for {env_fallback}: {e}")
-
-    # try common alternatives for gold
-    alt_symbols = ['GC=F', 'XAU=X', 'XAUUSD=X']
-    for alt in alt_symbols:
-        if alt == yf_symbol:
-            continue
-        try:
-            df_y = yf.download(tickers=alt, period=period, interval=interval, progress=False, threads=False, auto_adjust=False)
-            if df_y is not None and not df_y.empty:
-                print(f"✅ using alternative yf symbol {alt}")
-                df_y = df_y.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close','Volume':'Volume'})[['Open','High','Low','Close','Volume']]
-                df_y.index = pd.to_datetime(df_y.index).tz_localize(None)
-                return df_y
-        except Exception as e:
-            print(f"⚠️ yfinance alt {alt} failed: {e}")
-
-    print(f"❌ No data found for {symbol} via yfinance (tried mapping, env fallback and alternatives)")
-    return pd.DataFrame()
-except Exception as e:
-    print(f"yfinance fallback failed: {e}")
-    return pd.DataFrame()
-
+        import yfinance as yf
+        yf_symbol = symbol
+        # If symbol like XAUT/USDT or XAU/USDT, use Yahoo ticker XAUUSD=X
+        if 'XAU' in symbol.upper():
+            yf_symbol = 'XAUUSD=X'
+        period = '2d' if timeframe.endswith('m') else '5d'
+        interval = '1m' if timeframe == '1m' else ('5m' if timeframe == '5m' else '30m' if timeframe == "30m" else '60m')
+        df_y = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False, threads=False)
+        if df_y is None or df_y.empty:
+            return pd.DataFrame()
         df_y = df_y.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close','Volume':'Volume'})[['Open','High','Low','Close','Volume']]
         # Ensure index is timezone-naive datetime
         df_y.index = pd.to_datetime(df_y.index).tz_localize(None)
         return df_y
     except Exception as e:
-        print(f\"yfinance fallback failed: {e}\")
-        return pd.DataFrame()\n\n    except Exception as e:
+        print(f"yfinance fallback failed: {e}")
+        return pd.DataFrame()
+
+    except Exception as e:
         print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}): {e}")
         return pd.DataFrame() 
 
-
 def fetch_current_price_ccxt(symbol: str) -> float or None:
-    """جلب السعر الحالي الفوري.
-    المنهج: CCXT (محدد عبر CCXT_EXCHANGE) -> yfinance (mapped) -> YF_FALLBACK_SYMBOL env -> alternative symbols.
-    """
-    # 1) Try CCXT exchange (e.g., binance/bybit)
+    """جلب السعر الحالي الفوري. محاولة CCXT أولاً، ثم yfinance كنسخة احتياطية."""
     try:
         api_key = os.getenv("BYBIT_API_KEY", "")
         secret = os.getenv("BYBIT_SECRET", "")
@@ -647,66 +598,74 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
         if api_key and secret and exchange_name in ('bybit', 'bybitus', 'bybittest'):
             exchange_config = {'apiKey': api_key, 'secret': secret}
         exchange = exchange_class(exchange_config) if exchange_config else exchange_class()
-        try:
-            exchange.load_markets()
-        except Exception:
-            pass
-        try:
-            ticker = exchange.fetch_ticker(symbol)
-        except Exception as e:
-            ticker = None
+        exchange.load_markets()
+        ticker = exchange.fetch_ticker(symbol)
         if isinstance(ticker, dict):
-            price = ticker.get('last') or ticker.get('close') or ticker.get('ask') or ticker.get('bid')
-            if price:
-                return float(price)
-        if hasattr(ticker, 'get') is False and ticker and isinstance(ticker, (list, tuple)):
-            try:
-                possible = float(ticker[0])
-                return possible
-            except Exception:
-                pass
+            return ticker.get('ask') or ticker.get('last') or ticker.get('close')
+        return None
     except Exception as e:
-        print(f"❌ فشل جلب السعر اللحظي لـ {symbol} من {CCXT_EXCHANGE}: {e}")
-
-    # 2) Fallback to yfinance using mapping and environment fallback
+        print(f"CCXT price fetch failed ({CCXT_EXCHANGE}): {e}")
+    # yfinance fallback
     try:
         import yfinance as yf
-        yf_symbol = YF_SYMBOL_MAPPING.get(symbol.upper(), symbol)
-        # primary attempt
-        try:
-            df = yf.download(tickers=yf_symbol, period='1d', interval='1m', progress=False, threads=False, auto_adjust=False)
-            if df is not None and not df.empty:
-                return float(df['Close'].iloc[-1])
-        except Exception as e:
-            print(f"⚠️ yfinance primary failed for {yf_symbol}: {e}")
-
-        # try env-specified fallback
-        env_fallback = os.getenv('YF_FALLBACK_SYMBOL', '').strip()
-        if env_fallback:
-            try:
-                df2 = yf.download(tickers=env_fallback, period='1d', interval='1m', progress=False, threads=False, auto_adjust=False)
-                if df2 is not None and not df2.empty:
-                    print(f"✅ using YF_FALLBACK_SYMBOL {env_fallback}")
-                    return float(df2['Close'].iloc[-1])
-            except Exception as e:
-                print(f"⚠️ yfinance env fallback {env_fallback} failed: {e}")
-
-        # try common alternatives for gold
-        alt_symbols = ['GC=F', 'XAU=X', 'XAUUSD=X']
-        for alt in alt_symbols:
-            if alt == yf_symbol:
-                continue
-            try:
-                df3 = yf.download(tickers=alt, period='1d', interval='1m', progress=False, threads=False, auto_adjust=False)
-                if df3 is not None and not df3.empty:
-                    print(f"✅ using alternative yf symbol {alt}")
-                    return float(df3['Close'].iloc[-1])
-            except Exception as e:
-                print(f"⚠️ yfinance alt {alt} failed: {e}")
+        yf_symbol = symbol
+        if 'XAU' in symbol.upper():
+            yf_symbol = 'XAUUSD=X'
+        t = yf.Ticker(yf_symbol).history(period='1d', interval='1m')
+        if t is None or t.empty:
+            return None
+        last = t['Close'].iloc[-1]
+        return float(last)
     except Exception as e:
         print(f"yfinance price fetch failed: {e}")
+        return None
 
-    return None
+# =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) (تم تعديلها) ===============
+class AccessMiddleware(BaseMiddleware):
+    async def __call__(
+        self, handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: types.TelegramObject, data: Dict[str, Any],
+    ) -> Any:
+        user = data.get('event_from_user')
+        if user is None: return await handler(event, data)
+        user_id = user.id
+        username = user.username or "مستخدم"
+        
+        state = data.get('state')
+        current_state = await state.get_state() if state else None
+        
+        if isinstance(event, types.Message):
+            add_user(user_id, username) 
+
+        if user_id == ADMIN_ID: return await handler(event, data)
+
+        if isinstance(event, types.Message) and (event.text == '/start' or event.text.startswith('/start ')):
+             return await handler(event, data) 
+        
+        if current_state == UserStates.waiting_key_activation.state:
+            return await handler(event, data)
+             
+        allowed_for_banned = ["💬 تواصل مع الدعم", "💰 خطة الأسعار VIP", "ℹ️ عن AlphaTradeAI"]
+        if is_banned(user_id):
+            if isinstance(event, types.Message) and event.text not in allowed_for_banned:
+                 await event.answer("🚫 حسابك محظور من استخدام البوت. يمكنك التواصل مع الدعم أو التحقق من الأسعار/المعلومات فقط.")
+                 return
+            
+        allowed_for_all = ["💬 تواصل مع الدعم", "ℹ️ عن AlphaTradeAI", "🔗 تفعيل مفتاح الاشتراك", "📝 حالة الاشتراك", "💰 خطة الأسعار VIP", "📈 سعر السوق الحالي", "🔍 الصفقات النشطة"]
+        
+        # ⚠️ الزر الذي تم حذفه غير موجود هنا الآن.
+        
+        if isinstance(event, types.Message) and event.text in allowed_for_all:
+             return await handler(event, data) 
+
+        if not is_user_vip(user_id):
+            if isinstance(event, types.Message) and event.text not in allowed_for_all:
+                await event.answer("⚠️ هذه الميزة مخصصة للمشتركين (VIP) فقط. يرجى تفعيل مفتاح اشتراك لتتمكن من استخدامها.")
+            return
+
+        return await handler(event, data)
+
+# =============== وظائف التداول والتحليل (تم تطبيق كل التعديلات هنا) ===============
 
 def calculate_adx(df, window=14):
     """حساب مؤشر ADX, +DI, و -DI."""
@@ -1179,7 +1138,7 @@ def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="تحليل خاص (98% VIP) 👤"), KeyboardButton(text="تحليل فوري (90%+ ⚡️)")],
-            [KeyboardButton(text="تقرير الأداء الشخصي 📊")], # ⚠️ تغيير اسم الزر لتمييزه عن تقرير البوت
+            [KeyboardButton(text="تسجيل نتيجة صفقة 📝"), KeyboardButton(text="تقرير الأداء الشخصي 📊")], # ⚠️ تغيير اسم الزر لتمييزه عن تقرير البوت
             [KeyboardButton(text="📊 جرد الصفقات اليومي"), KeyboardButton(text="📢 رسالة لكل المستخدمين")],
             [KeyboardButton(text="🔑 إنشاء مفتاح اشتراك"), KeyboardButton(text="🗒️ عرض حالة المشتركين")],
             [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء حظر مستخدم")],
