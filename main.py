@@ -19,6 +19,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
+from typing import Callable, Dict, Any, Awaitable
+
+# Yahoo Finance symbol mapping to avoid guessing tickers
+YF_SYMBOL_MAPPING = {
+    "XAUUSD": "XAUUSD=X",
+    # Add other mappings as needed, e.g.:
+    # "BTCUSDT": "BTC-USD",
+    # "EURUSD": "EURUSD=X",
+}
 
 # =============== تعريف حالات FSM المُعدَّلة ===============
 class AdminStates(StatesGroup):
@@ -601,20 +610,24 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
         return None
     except Exception as e:
         print(f"CCXT price fetch failed ({CCXT_EXCHANGE}): {e}")
-    # yfinance fallback
+        # yfinance fallback
     try:
         import yfinance as yf
-        yf_symbol = symbol
-        if 'XAU' in symbol.upper():
-            yf_symbol = 'XAUUSD=X'
-        t = yf.Ticker(yf_symbol).history(period='1d', interval='1m')
-        if t is None or t.empty:
+        yf_symbol = YF_SYMBOL_MAPPING.get(symbol.upper(), symbol)
+        try:
+            t = yf.Ticker(yf_symbol).history(period='1d', interval='1m')
+            if t is None or t.empty:
+                print(f"❌ yfinance history empty for {yf_symbol}")
+                return None
+            last = t['Close'].iloc[-1]
+            return float(last)
+        except Exception as e:
+            print(f"❌ yfinance price fetch failed for {yf_symbol}: {e}")
             return None
-        last = t['Close'].iloc[-1]
-        return float(last)
     except Exception as e:
         print(f"yfinance price fetch failed: {e}")
         return None
+
 # =============== برمجية وسيطة للحظر والاشتراك (Access Middleware) (تم تعديلها) ===============
 class AccessMiddleware(BaseMiddleware):
     async def __call__(
@@ -1124,7 +1137,7 @@ def user_menu():
             [KeyboardButton(text="📈 سعر السوق الحالي"), KeyboardButton(text="🔍 الصفقات النشطة")],
             [KeyboardButton(text="🔗 تفعيل مفتاح الاشتراك"), KeyboardButton(text="📝 حالة الاشتراك")],
             [KeyboardButton(text="💰 خطة الأسعار VIP"), KeyboardButton(text="💬 تواصل مع الدعم")],
-            [KeyboardButton(text="ℹ️ عن AlphaTradeAI"), KeyboardButton(text="📊 تقرير الأداء الأسبوعي")] # ⚠️ التعديل المطلوب: إضافة زر التقرير الأسبوعي
+            [KeyboardButton(text="ℹ️ عن AlphaTradeAI")] # ⚠️ التعديل المطلوب: إضافة زر التقرير الأسبوعي
         ],
         resize_keyboard=True
     )
@@ -1133,9 +1146,10 @@ def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="تحليل خاص (98% VIP) 👤"), KeyboardButton(text="تحليل فوري (90%+ ⚡️)")],
-            [KeyboardButton(text="تسجيل نتيجة صفقة 📝"), KeyboardButton(text="تقرير الأداء الشخصي 📊")], # ⚠️ تغيير اسم الزر لتمييزه عن تقرير البوت
+            [KeyboardButton(text="تقرير الأداء الشخصي 📊")], # ⚠️ تغيير اسم الزر لتمييزه عن تقرير البوت
             [KeyboardButton(text="📊 جرد الصفقات اليومي"), KeyboardButton(text="📢 رسالة لكل المستخدمين")],
-            [KeyboardButton(text="🔑 إنشاء مفتاح اشتراك"), KeyboardButton(text="🗒️ عرض حالة المشتركين")],
+            [KeyboardButton(text="📊 تقرير الأداء الأسبوعي"), KeyboardButton(text="🔑 إنشاء مفتاح اشتراك")],
+            [KeyboardButton(text="🗒️ عرض حالة المشتركين")],
             [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء حظر مستخدم")],
             [KeyboardButton(text="👥 عدد المستخدمين"), KeyboardButton(text="🔙 عودة للمستخدم")]
         ],
