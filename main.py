@@ -10,72 +10,120 @@ import ccxt
 
 
 
-# --- ADX helpers injected by assistant ---
-def calculate_adx(df, window: int = 14):
-    """Calculate ADX and related indicators. Returns DataFrame with 'ADX' column."""
-    import pandas as pd
-    df = df.copy()
-    high = df['High'].astype(float)
-    low = df['Low'].astype(float)
-    close = df['Close'].astype(float)
+# --- Injected helpers (safe, minimal) ---
+def safe_format(val, fmt=None):
+    try:
+        if val is None:
+            if fmt and ('f' in fmt or '.' in fmt):
+                return format(0.0, fmt if not fmt.startswith(':') else fmt[1:])
+            return 'None'
+        if fmt:
+            spec = fmt
+            if spec.startswith('{') and spec.endswith('}'):
+                spec = spec[1:-1]
+            if spec.startswith(':'):
+                spec = spec[1:]
+            try:
+                return format(val, spec)
+            except Exception:
+                return str(val)
+        return str(val)
+    except Exception:
+        return str(val)
 
-    high_low = high - low
-    high_close = (high - close.shift()).abs()
-    low_close = (low - close.shift()).abs()
+def safe_number(val, fallback=0.0):
+    try:
+        if val is None:
+            return float(fallback)
+        return float(val)
+    except Exception:
+        return float(fallback)
 
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df['tr'] = tr.fillna(0.0)
-
-    up = high.diff().fillna(0.0)
-    down = (-1 * low.diff()).fillna(0.0)
-    plus_dm = up.where((up > 0) & (up > down), 0.0).fillna(0.0)
-    minus_dm = down.where((down > 0) & (down > up), 0.0).fillna(0.0)
-
-    df['+DM'] = plus_dm
-    df['-DM'] = minus_dm
-
-    def wilder(series, period):
-        return series.ewm(alpha=1.0/period, adjust=False).mean()
-
-    df['+DMS'] = wilder(df['+DM'], window)
-    df['-DMS'] = wilder(df['-DM'], window)
-    df['TRS'] = wilder(df['tr'], window).replace(0, 1e-10)
-
-    df['+DI'] = (df['+DMS'] / df['TRS']) * 100
-    df['-DI'] = (df['-DMS'] / df['TRS']) * 100
-
-    dx = (df['+DI'] - df['-DI']).abs() / (df['+DI'] + df['-DI']).replace(0, 1e-10) * 100
-    df['DX'] = dx.fillna(0.0)
-    df['ADX'] = wilder(df['DX'], window)
-
-    return df
+def calculate_adx(df, window=14):
+    try:
+        import pandas as _pd
+        df = df.copy()
+        high = df['High'].astype(float)
+        low = df['Low'].astype(float)
+        close = df['Close'].astype(float)
+        high_low = high - low
+        high_close = (high - close.shift()).abs()
+        low_close = (low - close.shift()).abs()
+        tr = _pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['tr'] = tr.fillna(0.0)
+        up = high.diff().fillna(0.0)
+        down = (-1 * low.diff()).fillna(0.0)
+        plus_dm = up.where((up > 0) & (up > down), 0.0).fillna(0.0)
+        minus_dm = down.where((down > 0) & (down > up), 0.0).fillna(0.0)
+        def wilder(series, period): return series.ewm(alpha=1.0/period, adjust=False).mean()
+        df['+DMS'] = wilder(plus_dm, window)
+        df['-DMS'] = wilder(minus_dm, window)
+        df['TRS'] = wilder(df['tr'], window).replace(0, 1e-10)
+        df['+DI'] = (df['+DMS'] / df['TRS']) * 100
+        df['-DI'] = (df['-DMS'] / df['TRS']) * 100
+        dx = (df['+DI'] - df['-DI']).abs() / (df['+DI'] + df['-DI']).replace(0, 1e-10) * 100
+        df['DX'] = dx.fillna(0.0)
+        df['ADX'] = wilder(df['DX'], window)
+        return df
+    except Exception as e:
+        try:
+            print(f"⚠️ calculate_adx error: {e}")
+        except Exception:
+            pass
+        return df
 
 def compute_adx_fallback(dfs: dict, preferred=('5m','15m','30m','1h'), window=14):
-    """Compute ADX for preferred windows using available DataFrames as fallback."""
     res = {}
-    import pandas as pd
-    for pref in preferred:
-        df = dfs.get(pref)
-        if df is None or getattr(df, 'shape', (0,))[0] < max(3, window):
-            # find any available df with sufficient rows
-            fallback = None
-            for k,v in dfs.items():
-                if v is not None and getattr(v, 'shape', (0,))[0] >= window:
-                    fallback = v; break
-            if fallback is None:
-                res[pref] = None; continue
-            df = fallback
-        try:
-            tmp = calculate_adx(df.copy(), window=window)
-            if 'ADX' in tmp.columns and len(tmp) > 0 and not pd.isna(tmp['ADX'].iloc[-1]):
-                res[pref] = float(tmp['ADX'].iloc[-1])
-            else:
+    try:
+        import pandas as _pd
+        for pref in preferred:
+            df = dfs.get(pref)
+            if df is None or getattr(df, 'shape', (0,))[0] < max(3, window):
+                found = None
+                for k,v in dfs.items():
+                    if v is not None and getattr(v, 'shape', (0,))[0] >= window:
+                        found = v; break
+                if found is None:
+                    res[pref] = None; continue
+                df = found
+            try:
+                tmp = calculate_adx(df.copy(), window=window)
+                if 'ADX' in tmp.columns and len(tmp) > 0 and not _pd.isna(tmp['ADX'].iloc[-1]):
+                    res[pref] = float(tmp['ADX'].iloc[-1])
+                else:
+                    res[pref] = None
+            except Exception:
                 res[pref] = None
-        except Exception:
-            res[pref] = None
+    except Exception:
+        pass
     return res
 
-# --- end ADX helpers ---
+# Admin daily inventory safe helper
+def admin_daily_inventory_safe(get_trades_callable=None):
+    try:
+        trades = []
+        if callable(get_trades_callable):
+            try:
+                trades = get_trades_callable() or []
+            except Exception as e:
+                print(f"⚠️ admin_daily_inventory_safe: error calling trades getter: {e}")
+                trades = []
+        if not trades:
+            return "لا توجد صفقات اليوم.", []
+        lines = []
+        for t in trades:
+            try:
+                if isinstance(t, dict):
+                    lines.append(f"{t.get('id','-')} {t.get('symbol','?')} {t.get('side','?')} {t.get('price','?')}")
+                else:
+                    lines.append(str(t))
+            except Exception:
+                lines.append(str(t))
+        return "\n".join(lines), trades
+    except Exception as e:
+        print(f"⚠️ admin_daily_inventory_safe top error: {e}")
+        return "خطأ في جلب الجرد اليومي.", []
+# --- end injected helpers ---
 
 from datetime import datetime, timedelta, timezone 
 from urllib.parse import urlparse
@@ -638,71 +686,41 @@ def calculate_lot_size_for_admin(symbol: str, stop_loss_distance: float) -> tupl
 # === دوال جلب البيانات الفورية (بدون تغيير) ===
 # ===============================================
 
-
 def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
-    """Robust OHLCV fetch: try CCXT then yfinance with mapping and fallbacks."""
+    """
+    تجلب بيانات الشموع (OHLCV) للرمز والفاصل الزمني المحدد.
+    المحاولة الأولى: CCXT (الافتراضي: CCXT_EXCHANGE، عادةً 'binance') بدون مفاتيح.
+    إن فشل أو لم يُرجع بيانات كافية -> fallback إلى yfinance (رمز XAUUSD=X).
+    """
+    # محاولة CCXT أولاً
     try:
         api_key = os.getenv("BYBIT_API_KEY", "")
         secret = os.getenv("BYBIT_SECRET", "")
-        exchange_name = CCXT_EXCHANGE.lower() if 'CCXT_EXCHANGE' in globals() else os.getenv('CCXT_EXCHANGE', 'binance')
+        exchange_name = CCXT_EXCHANGE.lower() if CCXT_EXCHANGE else "binance"
         exchange_class = getattr(ccxt, exchange_name)
         exchange_config = {}
+        # إذا وُجدت مفاتيح ونظام يطلبها (يُترك دعم المفتاح كما هو)
         if api_key and secret and exchange_name in ('bybit', 'bybitus', 'bybittest'):
             exchange_config = {'apiKey': api_key, 'secret': secret}
-        try:
-            exchange = exchange_class(exchange_config) if exchange_config else exchange_class()
-        except Exception:
-            exchange = exchange_class()
-
-        # Build candidate symbols for exchange
-        cand = []
-        cand.append(BINANCE_SYMBOL_MAPPING.get(symbol.upper(), symbol))
-        sym_up = symbol.upper()
-        if sym_up.endswith('USD'):
-            cand.append(sym_up.replace('USD', '/USDT'))
-            cand.append(sym_up.replace('USD', '/USDC'))
-        cand.append(sym_up + '/USDT')
-        cand.append(sym_up + '/USDC')
-        # dedupe
-        seen = set(); cand = [x for x in cand if x and not (x in seen or seen.add(x))]
-        print(f"DEBUG(fetch_ohlcv): trying CCXT candidates for {symbol}: {cand}")
-        for c in cand:
-            try:
-                df = None
-                try:
-                    ohlc = exchange.fetch_ohlcv(c, timeframe=timeframe, limit=limit)
-                    if ohlc and len(ohlc) > 0:
-                        import pandas as _pd
-                        df = _pd.DataFrame(ohlc, columns=['Timestamp','Open','High','Low','Close','Volume'])
-                        df['Timestamp'] = _pd.to_datetime(df['Timestamp'], unit='ms')
-                        df.set_index('Timestamp', inplace=True)
-                        return df[['Open','High','Low','Close','Volume']]
-                except Exception as e:
-                    # try variant without slash
-                    try:
-                        alt = c.replace('/', '')
-                        ohlc = exchange.fetch_ohlcv(alt, timeframe=timeframe, limit=limit)
-                        if ohlc and len(ohlc) > 0:
-                            import pandas as _pd
-                            df = _pd.DataFrame(ohlc, columns=['Timestamp','Open','High','Low','Close','Volume'])
-                            df['Timestamp'] = _pd.to_datetime(df['Timestamp'], unit='ms')
-                            df.set_index('Timestamp', inplace=True)
-                            return df[['Open','High','Low','Close','Volume']]
-                    except Exception:
-                        pass
-            except Exception as e:
-                print(f"⚠️ CCXT candidate {c} failed: {e}")
-        # If CCXT yielded nothing, fallback to yfinance
+        exchange = exchange_class(exchange_config) if exchange_config else exchange_class()
+        exchange.load_markets()
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        if ohlcv and len(ohlcv) > 0:
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            df = df[['Open','High','Low','Close','Volume']]
+            if len(df) >= 3:
+                return df
     except Exception as e:
-        print(f"⚠️ CCXT top-level error for {symbol}: {e}")
-
-    # --- Fallback to yfinance ---
+        print(f"CCXT fetch failed ({CCXT_EXCHANGE}): {e}")
+    
+# --- Fallback to yfinance ---
     try:
         import yfinance as yf
         yf_symbol = YF_SYMBOL_MAPPING.get(symbol.upper(), symbol)
-        # determine reasonable period/interval mapping
         period = '2d' if timeframe.endswith('m') else '5d'
-        interval = '1m' if timeframe == '1m' else ('5m' if timeframe == '5m' else ('30m' if timeframe == '30m' else '60m'))
+        interval = '1m' if timeframe == '1m' else ('5m' if timeframe == '5m' else '30m' if timeframe == "30m" else '60m')
         try:
             df_y = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False, threads=False, auto_adjust=False)
             if df_y is not None and not df_y.empty:
@@ -745,6 +763,12 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
         print(f"yfinance fallback failed: {e}")
         return pd.DataFrame()
 
+    except Exception as e:
+        print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}): {e}")
+        return pd.DataFrame() 
+
+
+
 def fetch_current_price_ccxt(symbol: str) -> float or None:
     """Robust current price fetch with multiple exchange symbol attempts and retries."""
     try:
@@ -761,10 +785,6 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
 
     # prepare candidate symbols for exchange
     ex_candidates = []
-    try:
-        print(f"DEBUG: price candidates for {symbol}: {ex_candidates}")
-    except Exception:
-        pass
     # canonical mapping if available
     ex_candidates.append(BINANCE_SYMBOL_MAPPING.get(symbol.upper(), symbol))
     # common transformations
@@ -780,10 +800,6 @@ def fetch_current_price_ccxt(symbol: str) -> float or None:
         ex_candidates.append('XAUT/USDT')
     # deduplicate while preserving order
     seen = set(); ex_candidates = [x for x in ex_candidates if x and not (x in seen or seen.add(x))]
-    try:
-        print(f"DEBUG: price candidates for {symbol}: {ex_candidates}")
-    except Exception:
-        pass
 
     # 1) Try CCXT candidates with small retry
     try:
@@ -950,30 +966,6 @@ def calculate_adx(df, window=14):
     return df
 
 def get_signal_and_confidence(symbol: str, min_filters: int) -> tuple[str, float, str, float, float, float, float, str, int]:
-
-    # --- prepare OHLCV dfs and compute ADX values ---
-    dfs_for_adx = {}
-    for tf in ('1m','3m','5m','15m','30m','1h'):
-        var = f"data_{tf}"
-        if var in locals():
-            try:
-                v = locals()[var]
-                if v is not None:
-                    dfs_for_adx[tf] = v
-            except Exception:
-                pass
-    computed_adx = compute_adx_fallback(dfs_for_adx, preferred=('5m','15m','30m','1h'), window=14)
-    adx_5m = computed_adx.get('5m') if isinstance(computed_adx, dict) else None
-    adx_15m = computed_adx.get('15m') if isinstance(computed_adx, dict) else None
-    adx_30m = computed_adx.get('30m') if isinstance(computed_adx, dict) else None
-    adx_1h = computed_adx.get('1h') if isinstance(computed_adx, dict) else None
-    # --- end ADX prep ---
-    adx_5m = computed_adx.get('5m') if isinstance(computed_adx, dict) else None
-    adx_15m = computed_adx.get('15m') if isinstance(computed_adx, dict) else None
-    adx_30m = computed_adx.get('30m') if isinstance(computed_adx, dict) else None
-    adx_1h = computed_adx.get('1h') if isinstance(computed_adx, dict) else None
-    # --- end ADX prep ---
-
     """
     تحليل مزدوج (Scalping / Long-Term) باستخدام 7 فلاتر لتحديد إشارة فائقة القوة.
     min_filters: الحد الأدنى المطلوب من الفلاتر (5 للـ 90%، 7 للـ 98%).
@@ -1044,7 +1036,7 @@ def get_signal_and_confidence(symbol: str, min_filters: int) -> tuple[str, float
 
         # === حساب المؤشرات على 5m (للفلاتر)
         data_5m = calculate_adx(data_5m)
-        current_adx_5m = (adx_5m if 'adx_5m' in locals() else None)
+        current_adx_5m = data_5m['ADX'].iloc[-1]
         data_5m['EMA_10'] = data_5m['Close'].ewm(span=10, adjust=False).mean()
         data_5m['EMA_30'] = data_5m['Close'].ewm(span=30, adjust=False).mean()
         htf_trend_5m = "BULLISH" if data_5m['EMA_10'].iloc[-1] > data_5m['EMA_30'].iloc[-1] else "BEARISH"
@@ -1059,7 +1051,7 @@ def get_signal_and_confidence(symbol: str, min_filters: int) -> tuple[str, float
         
         # === حساب المؤشرات على 15m (للفلاتر والـ Long-Term)
         data_15m = calculate_adx(data_15m)
-        current_adx_15m = (adx_15m if 'adx_15m' in locals() else None)
+        current_adx_15m = data_15m['ADX'].iloc[-1]
         data_15m['EMA_10'] = data_15m['Close'].ewm(span=10, adjust=False).mean()
         data_15m['EMA_30'] = data_15m['Close'].ewm(span=30, adjust=False).mean()
         htf_trend_15m = "BULLISH" if data_15m['EMA_10'].iloc[-1] > data_15m['EMA_30'].iloc[-1] else "BEARISH"
@@ -1419,7 +1411,7 @@ def admin_menu():
             [KeyboardButton(text="تقرير الأداء الشخصي 📊")], # ⚠️ تغيير اسم الزر لتمييزه عن تقرير البوت
             [KeyboardButton(text="📊 جرد الصفقات اليومي"), KeyboardButton(text="📢 رسالة لكل المستخدمين")],
             [KeyboardButton(text="📊 تقرير الأداء الأسبوعي"), KeyboardButton(text="🔑 إنشاء مفتاح اشتراك")],
-            [KeyboardButton(text="🔑 إنشاء مفتاح اشتراك"), KeyboardButton(text="🗒️ عرض حالة المشتركين")],
+            [KeyboardButton(text="🗒️ عرض حالة المشتركين")],
             [KeyboardButton(text="🚫 حظر مستخدم"), KeyboardButton(text="✅ إلغاء حظر مستخدم")],
             [KeyboardButton(text="👥 عدد المستخدمين"), KeyboardButton(text="🔙 عودة للمستخدم")]
         ],
