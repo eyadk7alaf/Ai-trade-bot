@@ -580,9 +580,18 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
         df_y.index = pd.to_datetime(df_y.index).tz_localize(None)
         return df_y
     except Exception as e:
+    print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}): {e}")
+    try:
+        import yfinance as yf
+        yf_symbol = 'XAUUSD=X' if 'XAU' in symbol.upper() else symbol
+        data = yf.download(tickers=yf_symbol, period="2d", interval="1m", progress=False)
+        if data.empty:
+            return pd.DataFrame()
+        data = data.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close','Volume':'Volume'})[['Open','High','Low','Close','Volume']]
+        data.index = pd.to_datetime(data.index).tz_localize(None)
+        return data
+    except Exception as e:
         print(f"yfinance fallback failed: {e}")
-        return pd.DataFrame()    except Exception as e:
-        print(f"❌ فشل جلب بيانات OHLCV من CCXT ({CCXT_EXCHANGE}): {e}")
         return pd.DataFrame() 
 
 def fetch_current_price_ccxt(symbol: str) -> float or None:
