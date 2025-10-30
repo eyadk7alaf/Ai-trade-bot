@@ -9,122 +9,187 @@ import uuid
 import ccxt 
 
 
+# --- Binance REST + unified fetcher + live analysis helpers (injected) ---
+import requests, time, json
+from datetime import datetime
 
-# --- Injected helpers (safe, minimal) ---
-def safe_format(val, fmt=None):
+def fetch_binance_klines(symbol, interval='1m', limit=500, logger=print):
     try:
-        if val is None:
-            if fmt and ('f' in fmt or '.' in fmt):
-                return format(0.0, fmt if not fmt.startswith(':') else fmt[1:])
-            return 'None'
-        if fmt:
-            spec = fmt
-            if spec.startswith('{') and spec.endswith('}'):
-                spec = spec[1:-1]
-            if spec.startswith(':'):
-                spec = spec[1:]
+        s = symbol.replace('/','').upper()
+        if not s.endswith('USDT'):
+            cand = [s, s+'USDT']
+        else:
+            cand = [s]
+        url = 'https://api.binance.com/api/v3/klines'
+        for c in cand:
+            params = {'symbol': c, 'interval': interval, 'limit': limit}
             try:
-                return format(val, spec)
-            except Exception:
-                return str(val)
-        return str(val)
-    except Exception:
-        return str(val)
-
-def safe_number(val, fallback=0.0):
-    try:
-        if val is None:
-            return float(fallback)
-        return float(val)
-    except Exception:
-        return float(fallback)
-
-def calculate_adx(df, window=14):
-    try:
-        import pandas as _pd
-        df = df.copy()
-        high = df['High'].astype(float)
-        low = df['Low'].astype(float)
-        close = df['Close'].astype(float)
-        high_low = high - low
-        high_close = (high - close.shift()).abs()
-        low_close = (low - close.shift()).abs()
-        tr = _pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df['tr'] = tr.fillna(0.0)
-        up = high.diff().fillna(0.0)
-        down = (-1 * low.diff()).fillna(0.0)
-        plus_dm = up.where((up > 0) & (up > down), 0.0).fillna(0.0)
-        minus_dm = down.where((down > 0) & (down > up), 0.0).fillna(0.0)
-        def wilder(series, period): return series.ewm(alpha=1.0/period, adjust=False).mean()
-        df['+DMS'] = wilder(plus_dm, window)
-        df['-DMS'] = wilder(minus_dm, window)
-        df['TRS'] = wilder(df['tr'], window).replace(0, 1e-10)
-        df['+DI'] = (df['+DMS'] / df['TRS']) * 100
-        df['-DI'] = (df['-DMS'] / df['TRS']) * 100
-        dx = (df['+DI'] - df['-DI']).abs() / (df['+DI'] + df['-DI']).replace(0, 1e-10) * 100
-        df['DX'] = dx.fillna(0.0)
-        df['ADX'] = wilder(df['DX'], window)
-        return df
-    except Exception as e:
-        try:
-            print(f"⚠️ calculate_adx error: {e}")
-        except Exception:
-            pass
-        return df
-
-def compute_adx_fallback(dfs: dict, preferred=('5m','15m','30m','1h'), window=14):
-    res = {}
-    try:
-        import pandas as _pd
-        for pref in preferred:
-            df = dfs.get(pref)
-            if df is None or getattr(df, 'shape', (0,))[0] < max(3, window):
-                found = None
-                for k,v in dfs.items():
-                    if v is not None and getattr(v, 'shape', (0,))[0] >= window:
-                        found = v; break
-                if found is None:
-                    res[pref] = None; continue
-                df = found
-            try:
-                tmp = calculate_adx(df.copy(), window=window)
-                if 'ADX' in tmp.columns and len(tmp) > 0 and not _pd.isna(tmp['ADX'].iloc[-1]):
-                    res[pref] = float(tmp['ADX'].iloc[-1])
-                else:
-                    res[pref] = None
-            except Exception:
-                res[pref] = None
-    except Exception:
-        pass
-    return res
-
-# Admin daily inventory safe helper
-def admin_daily_inventory_safe(get_trades_callable=None):
-    try:
-        trades = []
-        if callable(get_trades_callable):
-            try:
-                trades = get_trades_callable() or []
+                r = requests.get(url, params=params, timeout=10)
+                r.raise_for_status()
+                data = r.json()
+                if data:
+                    import pandas as _pd
+                    df = _pd.DataFrame(data, columns=['OpenTime','Open','High','Low','Close','Volume','CloseTime','QAV','NumTrades','TBBase','TBQuote','Ignore'])
+                    df['Open'] = df['Open'].astype(float)
+                    df['High'] = df['High'].astype(float)
+                    df['Low'] = df['Low'].astype(float)
+                    df['Close'] = df['Close'].astype(float)
+                    df['Volume'] = df['Volume'].astype(float)
+                    df.index = _pd.to_datetime(df['OpenTime'], unit='ms')
+                    return df[['Open','High','Low','Close','Volume']]
             except Exception as e:
-                print(f"⚠️ admin_daily_inventory_safe: error calling trades getter: {e}")
-                trades = []
-        if not trades:
-            return "لا توجد صفقات اليوم.", []
-        lines = []
-        for t in trades:
-            try:
-                if isinstance(t, dict):
-                    lines.append(f"{t.get('id','-')} {t.get('symbol','?')} {t.get('side','?')} {t.get('price','?')}")
-                else:
-                    lines.append(str(t))
-            except Exception:
-                lines.append(str(t))
-        return "\n".join(lines), trades
+                logger(f"DEBUG: binance candidate {c} failed: {e}")
+        logger(f"⚠️ Binance returned no data for {symbol} (candidates={cand})")
+        return None
     except Exception as e:
-        print(f"⚠️ admin_daily_inventory_safe top error: {e}")
-        return "خطأ في جلب الجرد اليومي.", []
-# --- end injected helpers ---
+        logger(f"⚠️ fetch_binance_klines top error for {symbol}: {e}")
+        return None
 
+def fetch_ohlcv_unified(symbol, timeframe='1m', limit=500, logger=print):
+    # try Binance REST first
+    df = fetch_binance_klines(symbol, interval=timeframe, limit=limit, logger=logger)
+    if df is not None and not df.empty:
+        return df
+    # try ccxt public fetch
+    try:
+        import ccxt, pandas as _pd
+        ex = ccxt.binance()
+        candidates = [symbol, symbol.replace('/',''), symbol.replace('/','')+'USDT', symbol.replace('/','')+'/USDT']
+        for c in candidates:
+            try:
+                o = ex.fetch_ohlcv(c, timeframe=timeframe, limit=limit)
+                if o and len(o):
+                    df = _pd.DataFrame(o, columns=['Timestamp','Open','High','Low','Close','Volume'])
+                    df['Timestamp'] = _pd.to_datetime(df['Timestamp'], unit='ms')
+                    df.set_index('Timestamp', inplace=True)
+                    return df[['Open','High','Low','Close','Volume']]
+            except Exception:
+                continue
+    except Exception as e:
+        logger(f"DEBUG: ccxt fetch failed: {e}")
+    # fallback yfinance minimal
+    try:
+        import yfinance as yf, pandas as _pd
+        yf_symbol = globals().get('YF_SYMBOL_MAPPING', {}).get(symbol.upper(), symbol)
+        period = '2d' if timeframe.endswith('m') else '5d'
+        interval = timeframe if timeframe.endswith('m') else ('1h' if timeframe.endswith('h') else '1d')
+        dfy = yf.download(tickers=yf_symbol, period=period, interval=interval, progress=False, threads=False, auto_adjust=False)
+        if dfy is not None and not dfy.empty:
+            dfy.index = _pd.to_datetime(dfy.index).tz_localize(None)
+            return dfy[['Open','High','Low','Close','Volume']]
+    except Exception as e:
+        logger(f"DEBUG: yfinance fallback failed: {e}")
+    return None
+
+def get_adx_safe(df, window=14):
+    try:
+        if df is None or getattr(df, 'shape', (0,))[0] < window:
+            return None
+        try:
+            from ta.trend import ADXIndicator
+            adx = ADXIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=window).adx()
+            return float(adx.iloc[-1]) if not adx.empty and not adx.isna().all() else None
+        except Exception:
+            if 'calculate_adx' in globals():
+                tmp = calculate_adx(df.copy(), window=window)
+                return float(tmp['ADX'].iloc[-1]) if 'ADX' in tmp.columns and len(tmp) and not tmp['ADX'].isna().all() else None
+            return None
+    except Exception:
+        return None
+
+def get_rsi_safe(df, window=14):
+    try:
+        if df is None or getattr(df, 'shape', (0,))[0] < window:
+            return None
+        try:
+            from ta.momentum import RSIIndicator
+            rsi = RSIIndicator(close=df['Close'], window=window).rsi()
+            return float(rsi.iloc[-1]) if not rsi.empty and not rsi.isna().all() else None
+        except Exception:
+            import pandas as _pd
+            delta = df['Close'].diff()
+            up = delta.where(delta>0, 0.0).rolling(window).mean()
+            down = -delta.where(delta<0, 0.0).rolling(window).mean()
+            rs = up / down.replace(0, 1e-10)
+            rsi = 100 - (100 / (1 + rs))
+            return float(rsi.iloc[-1]) if not rsi.empty and not rsi.isna().all() else None
+    except Exception:
+        return None
+
+def get_atr_safe(df, window=14):
+    try:
+        if df is None or getattr(df, 'shape', (0,))[0] < window:
+            return None
+        try:
+            from ta.volatility import AverageTrueRange
+            atr = AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close'], window=window).average_true_range()
+            return float(atr.iloc[-1]) if not atr.empty and not atr.isna().all() else None
+        except Exception:
+            import pandas as _pd
+            high = df['High']; low = df['Low']; close = df['Close']
+            tr = _pd.concat([high-low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+            return float(tr.rolling(window).mean().iloc[-1]) if not tr.empty and not tr.isna().all() else None
+    except Exception:
+        return None
+
+def run_analysis_for_symbol(symbol='XAUUSDT', timeframes=('1m','5m','15m','30m','1h')):
+    import pandas as _pd
+    results = {}
+    for tf in timeframes:
+        df = fetch_ohlcv_unified(symbol, timeframe=tf, limit=500)
+        if df is None or df.empty:
+            results[tf] = None
+            continue
+        adx = get_adx_safe(df, window=14)
+        rsi = get_rsi_safe(df, window=14)
+        atr = get_atr_safe(df, window=14)
+        last_price = float(df['Close'].iloc[-1]) if 'Close' in df.columns and not df['Close'].isna().all() else None
+        results[tf] = {'adx': adx, 'rsi': rsi, 'atr': atr, 'last_price': last_price, 'time': str(df.index[-1])}
+    votes = {'buy':0,'sell':0,'hold':0}
+    total = 0
+    for tf, vals in results.items():
+        if vals is None:
+            continue
+        total += 1
+        adx = vals.get('adx'); rsi = vals.get('rsi')
+        if adx is not None and adx > 25 and rsi is not None:
+            if rsi < 40:
+                votes['sell'] += 1
+            elif rsi > 60:
+                votes['buy'] += 1
+            else:
+                votes['hold'] += 1
+        else:
+            votes['hold'] += 1
+    final = 'HOLD'
+    if votes['buy'] > votes['sell'] and votes['buy'] >= 2:
+        final = 'BUY'
+    elif votes['sell'] > votes['buy'] and votes['sell'] >= 2:
+        final = 'SELL'
+    confidence = round((max(votes.values()) / total * 100) if total>0 else 0.0, 2)
+    last_price = None; latest_time = None
+    for tf in ('1m','5m','15m','30m','1h'):
+        r = results.get(tf)
+        if r and r.get('last_price') is not None:
+            last_price = r.get('last_price'); latest_time = r.get('time'); break
+    report = {'symbol': symbol, 'signal': final, 'confidence': confidence, 'votes': votes, 'results': results, 'last_price': last_price, 'time': latest_time}
+    return report
+
+_running = {'stop': False}
+def start_analysis_loop(symbols=('XAUUSDT',), interval_seconds=60, logger=print):
+    logger(f"Starting analysis for {symbols} every {interval_seconds}s")
+    try:
+        while not _running.get('stop', False):
+            for sym in symbols:
+                try:
+                    rep = run_analysis_for_symbol(sym)
+                    logger(json.dumps(rep, ensure_ascii=False))
+                except Exception as e:
+                    logger(f"Analysis error for {sym}: {e}")
+            time.sleep(interval_seconds)
+    except Exception as e:
+        logger(f"start_analysis_loop error: {e}")
+# --- end Binance REST helpers ---
 from datetime import datetime, timedelta, timezone 
 from urllib.parse import urlparse
 
@@ -641,7 +706,7 @@ def generate_weekly_performance_report():
     end_date = datetime.now().strftime('%Y-%m-%d')
     
     report = f"""
-📈 **تقرير الأداء الشخصي** 📅 **الفترة:** {start_date} إلى {end_date}
+📈 **** 📅 **الفترة:** {start_date} إلى {end_date}
 ━━━━━━━━━━━━━━━
 💰 **رأس مال البداية:** ${start_capital:,.2f}
 💵 **رأس مال اليوم:** ${current_capital:,.2f}
@@ -1408,7 +1473,7 @@ def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="تحليل خاص (98% VIP) 👤"), KeyboardButton(text="تحليل فوري (90%+ ⚡️)")],
-            [KeyboardButton(text="تقرير الأداء الشخصي 📊")], # ⚠️ تغيير اسم الزر لتمييزه عن تقرير البوت
+            [KeyboardButton(text=" 📊")], # ⚠️ تغيير اسم الزر لتمييزه عن تقرير البوت
             [KeyboardButton(text="📊 جرد الصفقات اليومي"), KeyboardButton(text="📢 رسالة لكل المستخدمين")],
             [KeyboardButton(text="📊 تقرير الأداء الأسبوعي"), KeyboardButton(text="🔑 إنشاء مفتاح اشتراك")],
             [KeyboardButton(text="🗒️ عرض حالة المشتركين")],
@@ -1488,7 +1553,7 @@ async def prompt_trade_result(msg: types.Message, state: FSMContext):
     await state.set_state(AdminStates.waiting_trade_result_input)
     await msg.reply("يرجى إدخال ملخص نتيجة الصفقة اليدوية بالترتيب التالي (افصل بينهما بمسافة):\n**الرمز العمل اللوت الربح/الخسارة**\n\nمثال: `XAUT/USDT BUY 0.05 -2.50`")
 
-@dp.message(F.text == "تقرير الأداء الشخصي 📊") # ⚠️ الزر المُعدَّل
+@dp.message(F.text == " 📊") # ⚠️ الزر المُعدَّل
 async def show_weekly_report_admin(msg: types.Message):
     if msg.from_user.id != ADMIN_ID: return
     report = generate_weekly_performance_report()
@@ -2133,3 +2198,9 @@ if __name__ == "__main__":
         print("🤖 تم إيقاف البوت بنجاح.")
     except Exception as e:
         print(f"حدث خطأ كبير: {e}")
+
+if __name__ == '__main__':
+    try:
+        start_analysis_loop(symbols=('XAUUSDT',), interval_seconds=60)
+    except Exception as e:
+        print(f'Auto-start error: {e}')
