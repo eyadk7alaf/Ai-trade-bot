@@ -1,7 +1,8 @@
-Aiogram>=3.4.0
+aiogram>=3.4.0
 yfinance
 schedule
 pandas
 psycopg2-binary
 ccxt
 requests
+beautifulsoup4
