@@ -12,6 +12,7 @@ import uuid
 import ccxt 
 import requests
 import json
+import re
 
 from datetime import datetime, timedelta, timezone 
 from urllib.parse import urlparse
@@ -399,24 +400,38 @@ def get_daily_trade_report():
 
 # =============== مصادر بيانات حية بدون API Keys ===============
 def get_investing_gold_price():
-    """جلب سعر الذهب مباشرة من investing.com"""
+    """جلب سعر الذهب من Investing.com - مصدر قوي"""
     try:
         url = "https://www.investing.com/commodities/gold"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.google.com/'
         }
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # البحث عن سعر الذهب في الصفحة
-        price_element = soup.find('span', {'data-test': 'instrument-price-last'})
-        if price_element:
-            price_text = price_element.text.replace(',', '').strip()
-            price = float(price_text)
-            if 1000 <= price <= 5000:  # نطاق واقعي للذهب
-                return price, "Investing.com"
-                
+        # طرق متعددة للعثور على السعر
+        selectors = [
+            'span[data-test="instrument-price-last"]',
+            '.text-2xl',
+            '.instrument-price_last__KQzyA',
+            '.last-price-value',
+            '.pid-8830-last'
+        ]
+        
+        for selector in selectors:
+            price_element = soup.select_one(selector)
+            if price_element:
+                price_text = price_element.text.replace(',', '').strip()
+                try:
+                    price = float(price_text)
+                    if 3500 <= price <= 4500:
+                        return price, "Investing.com"
+                except:
+                    continue
+                    
     except Exception as e:
         print(f"❌ Investing.com failed: {e}")
     
@@ -425,19 +440,23 @@ def get_investing_gold_price():
 def get_marketwatch_gold_price():
     """جلب سعر الذهب من MarketWatch"""
     try:
-        url = "https://www.marketwatch.com/investing/future/gold"
+        url = "https://www.marketwatch.com/investing/future/gc00"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.content, 'html.parser')
         
+        # البحث عن السعر في MarketWatch
         price_element = soup.find('bg-quote', {'class': 'value'})
+        if not price_element:
+            price_element = soup.find('span', {'class': 'value'})
+            
         if price_element:
             price_text = price_element.text.replace(',', '').strip()
             price = float(price_text)
-            if 1000 <= price <= 5000:
+            if 3500 <= price <= 4500:
                 return price, "MarketWatch"
                 
     except Exception as e:
@@ -453,15 +472,18 @@ def get_tradingview_gold_price():
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.content, 'html.parser')
         
         # البحث عن السعر في TradingView
         price_element = soup.find('div', {'class': 'last-JWoJqCpY'})
+        if not price_element:
+            price_element = soup.find('span', {'class': 'last-JWoJqCpY'})
+            
         if price_element:
             price_text = price_element.text.replace(',', '').strip()
             price = float(price_text)
-            if 1000 <= price <= 5000:
+            if 3500 <= price <= 4500:
                 return price, "TradingView"
                 
     except Exception as e:
@@ -469,52 +491,117 @@ def get_tradingview_gold_price():
     
     return None
 
-def calculate_manual_price():
-    """حساب سعر يدوي كحل أخير"""
+def get_yahoo_gold_price():
+    """جلب سعر الذهب من Yahoo Finance"""
     try:
-        # استخدام متوسط سعري من المصادر السابقة مع بعض التقلبات الواقعية
-        base_price = 2015.0  # سعر أساسي واقعي
-        variation = random.uniform(-10, 10)  # تقلبات طفيفة
-        manual_price = base_price + variation
+        url = "https://finance.yahoo.com/quote/GC=F"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
         
-        return manual_price, "Manual Calculation"
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # البحث عن السعر في Yahoo Finance
+        price_element = soup.find('fin-streamer', {'data-symbol': 'GC=F'})
+        if price_element:
+            price_text = price_element.get('value', '')
+            if not price_text:
+                price_text = price_element.text
+            price_text = price_text.replace(',', '').strip()
+            price = float(price_text)
+            if 3500 <= price <= 4500:
+                return price, "Yahoo Finance"
+                
     except Exception as e:
-        print(f"❌ Manual calculation failed: {e}")
-        return None
+        print(f"❌ Yahoo Finance failed: {e}")
+    
+    return None
+
+def get_forex_gold_price():
+    """جلب سعر الذهب من Forex.com"""
+    try:
+        url = "https://www.forex.com/global/commodities-trading/gold-price/"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # البحث عن السعر في Forex.com
+        price_pattern = r'\$([0-9,]+\.?[0-9]*)'
+        matches = re.findall(price_pattern, response.text)
+        
+        for match in matches:
+            try:
+                price = float(match.replace(',', ''))
+                if 3500 <= price <= 4500:
+                    return price, "Forex.com"
+            except:
+                continue
+                
+    except Exception as e:
+        print(f"❌ Forex.com failed: {e}")
+    
+    return None
+
+def get_xe_gold_price():
+    """جلب سعر الذهب من XE.com"""
+    try:
+        url = "https://www.xe.com/currencycharts/?from=XAU&to=USD"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # البحث عن السعر في XE.com
+        price_element = soup.find('span', {'class': 'rate'})
+        if price_element:
+            price_text = price_element.text.replace(',', '').strip()
+            price = float(price_text)
+            if 3500 <= price <= 4500:
+                return price, "XE.com"
+                
+    except Exception as e:
+        print(f"❌ XE.com failed: {e}")
+    
+    return None
 
 def get_live_gold_price():
-    """نظام جلب أسعار ذهب حية من مصادر متعددة مع Fallback"""
+    """نظام جلب أسعار ذهب حية من 6 مصادر قوية"""
     sources = [
-        get_investing_gold_price,    # 1 - investing.com (الأساسي)
-        get_marketwatch_gold_price,  # 2 - marketwatch (الإحتياطي)  
-        get_tradingview_gold_price,  # 3 - tradingview (الطوارئ)
-        calculate_manual_price       # 4 - حساب يدوي (آخر حل)
+        get_investing_gold_price,    # 1 - investing.com (الأقوى)
+        get_marketwatch_gold_price,  # 2 - marketwatch (إحتياطي)
+        get_tradingview_gold_price,  # 3 - tradingview (مباشر)
+        get_yahoo_gold_price,        # 4 - yahoo finance (مستقر)
+        get_forex_gold_price,        # 5 - forex.com (مخصص للذهب)
+        get_xe_gold_price           # 6 - xe.com (مصدر عالمي)
     ]
     
-    last_valid_price = None
-    last_valid_source = "Unknown"
+    successful_prices = []
     
     for source in sources:
         try:
             result = source()
             if result:
                 price, source_name = result
-                print(f"✅ تم جلب السعر من {source_name}: {price}")
-                return price, source_name
-            elif last_valid_price is not None:
-                # استخدام آخر سعر صالح إذا فشل المصدر الحالي
-                print(f"⚠️ استخدام آخر سعر صالح من {last_valid_source}: {last_valid_price}")
-                return last_valid_price, f"{last_valid_source} (Cached)"
+                if 3500 <= price <= 4500:  # تحقق من واقعية السعر
+                    successful_prices.append((price, source_name))
+                    print(f"✅ تم جلب السعر من {source_name}: {price}")
         except Exception as e:
             print(f"❌ فشل {source.__name__}: {e}")
             continue
     
-    # إذا فشلت جميع المصادر، استخدام آخر سعر معروف
-    if last_valid_price is not None:
-        print(f"🔄 استخدام آخر سعر معروف: {last_valid_price}")
-        return last_valid_price, "Last Known Price"
+    # اختيار أفضل سعر (أول سعر صالح)
+    if successful_prices:
+        return successful_prices[0]
     
-    raise Exception("❌ فشل جميع المصادر في جلب سعر الذهب الحي")
+    # إذا فشلت جميع المصادر
+    print("❌ فشلت جميع مصادر البيانات")
+    return None
 
 def generate_synthetic_ohlcv(current_price, timeframe, limit=100):
     """توليد بيانات OHLCV واقعية بناءً على السعر الحالي"""
@@ -567,8 +654,9 @@ def fetch_live_ohlcv(timeframe: str, limit: int = 100):
     """جلب بيانات OHLCV حية من مصادر متعددة"""
     try:
         # أولاً: محاولة جلب السعر الحي
-        current_price, source = get_live_gold_price()
-        if current_price:
+        result = get_live_gold_price()
+        if result:
+            current_price, source = result
             # ثانياً: توليد بيانات OHLCV واقعية بناءً على السعر الحي
             df = generate_synthetic_ohlcv(current_price, timeframe, limit)
             if not df.empty:
@@ -585,8 +673,11 @@ def fetch_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFr
     return fetch_live_ohlcv(timeframe, limit)
 
 def fetch_current_price_ccxt(symbol: str) -> float:
-    price, source = get_live_gold_price()
-    return price
+    result = get_live_gold_price()
+    if result:
+        price, source = result
+        return price
+    return 0.0
 
 # =============== استراتيجيات محسنة ===============
 def price_action_breakout_strategy(df):
@@ -741,10 +832,12 @@ def get_enhanced_signal(min_filters: int):
         if df_15m.empty or df_1h.empty or df_4h.empty:
             return "❌ لا توجد بيانات كافية للتحليل", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE", 0
         
-        current_price, source = get_live_gold_price()
-        if not current_price:
+        result = get_live_gold_price()
+        if not result:
             return "❌ فشل جلب السعر الحالي", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE", 0
         
+        current_price, source = result
+
         # تطبيق جميع الاستراتيجيات المتقدمة
         strategies = [
             price_action_breakout_strategy(df_15m),
@@ -1194,8 +1287,10 @@ async def back_to_user_menu(msg: types.Message):
 @dp.message(F.text == "📈 سعر السوق الحالي")
 async def get_current_price(msg: types.Message):
     try:
-        current_price, source = get_live_gold_price()
-        price_msg = f"""
+        result = get_live_gold_price()
+        if result:
+            current_price, source = result
+            price_msg = f"""
 💰 **السعر الحي للذهب (XAUUSD)**
 ━━━━━━━━━━━━━━━
 🎯 **السعر الحالي:** <b>${current_price:,.2f}</b>
@@ -1204,7 +1299,9 @@ async def get_current_price(msg: types.Message):
         
 ✨ **تحديث فوري من الأسواق العالمية**
 """
-        await msg.reply(price_msg, parse_mode="HTML")
+            await msg.reply(price_msg, parse_mode="HTML")
+        else:
+            await msg.reply("❌ فشل جلب السعر الحي. يرجى المحاولة لاحقاً.")
     except Exception as e:
         await msg.reply("❌ فشل جلب السعر الحي. يرجى المحاولة لاحقاً.")
 
@@ -1423,9 +1520,10 @@ async def check_open_trades():
         return
 
     try:
-        current_price, source = get_live_gold_price()
-        if current_price is None:
-             raise Exception("فشل جلب السعر.")
+        result = get_live_gold_price()
+        if not result:
+            raise Exception("فشل جلب السعر.")
+        current_price, source = result
     except Exception as e:
         print(f"❌ فشل متابعة الصفقات: {e}")
         return
