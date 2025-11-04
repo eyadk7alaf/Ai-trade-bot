@@ -7,16 +7,13 @@ import os
 import psycopg2
 import pandas as pd
 import numpy as np
-import schedule
-import random
 import uuid
 import requests
 import json
-import re
 import ta
+import logging
 from datetime import datetime, timedelta, timezone 
 from urllib.parse import urlparse
-from bs4 import BeautifulSoup
 
 from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.filters import Command
@@ -27,6 +24,9 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 from typing import Callable, Dict, Any, Awaitable
 
+# إعدادات اللوجر
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # =============== إعدادات محسنة ===============
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -51,9 +51,9 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "I1l_1")
 try:
     ADMIN_ID = int(ADMIN_ID_STR)
     if ADMIN_ID == 0:
-        print("⚠️ ADMIN_ID هو 0. قد تكون وظائف الأدمن غير متاحة.")
+        logger.warning("⚠️ ADMIN_ID هو 0. قد تكون وظائف الأدمن غير متاحة.")
 except ValueError:
-    print("❌ خطأ! ADMIN_ID في متغيرات البيئة ليس رقمًا صالحًا.")
+    logger.error("❌ خطأ! ADMIN_ID في متغيرات البيئة ليس رقمًا صالحًا.")
     ADMIN_ID = 0 
 
 if not BOT_TOKEN:
@@ -86,7 +86,7 @@ def get_db_connection():
             port=url.port
         )
     except Exception as e:
-        print(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
+        logger.error(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
         return None
 
 def init_db():
@@ -113,12 +113,12 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE trades ADD COLUMN trade_type VARCHAR(50) DEFAULT 'SCALPING'")
         conn.commit()
-        print("✅ تم تحديث جدول 'trades' بنجاح.")
+        logger.info("✅ تم تحديث جدول 'trades' بنجاح.")
     except psycopg2.errors.DuplicateColumn:
-        print("✅ العمود 'trade_type' موجود بالفعل.")
+        logger.info("✅ العمود 'trade_type' موجود بالفعل.")
         conn.rollback() 
     except Exception as e:
-        print(f"⚠️ فشل تحديث جدول 'trades': {e}")
+        logger.warning(f"⚠️ فشل تحديث جدول 'trades': {e}")
         conn.rollback()
         
     cursor.execute("SELECT value_float FROM admin_performance WHERE record_type = 'CAPITAL' ORDER BY timestamp DESC LIMIT 1")
@@ -130,7 +130,7 @@ def init_db():
         conn.commit()
         
     conn.close()
-    print("✅ تم تهيئة جداول قاعدة البيانات بنجاح.")
+    logger.info("✅ تم تهيئة جداول قاعدة البيانات بنجاح.")
 
 # =============== دوال قاعدة البيانات ===============
 def add_user(user_id, username):
@@ -383,27 +383,38 @@ def get_daily_trade_report():
 
     return report_msg
 
-# =============== مصادر بيانات حقيقية محسنة ===============
+# =============== مصادر بيانات حقيقية فقط ===============
 def get_binance_gold_price():
     """جلب سعر الذهب من Binance API (حقيقي وموثوق)"""
     try:
+        logger.info("🔍 جرب جلب سعر من Binance...")
         url = "https://api.binance.com/api/v3/ticker/price?symbol=XAUUSDT"
         response = requests.get(url, timeout=10)
-        data = response.json()
         
-        if 'price' in data:
-            price = float(data['price'])
-            # تحقق من نطاق سعر الذهب الواقعي
-            if 1500 <= price <= 2500:  # نطاق واقعي للذهب
-                return price, "Binance (XAU/USDT)"
+        if response.status_code == 200:
+            data = response.json()
+            if 'price' in data:
+                price = float(data['price'])
+                # تحقق من نطاق سعر الذهب الواقعي
+                if 1500 <= price <= 2500:  # نطاق واقعي للذهب
+                    logger.info(f"✅ Binance price: ${price:,.2f}")
+                    return price, "Binance (XAU/USDT)"
+                else:
+                    logger.warning(f"❌ سعر غير واقعي من Binance: ${price:,.2f}")
+            else:
+                logger.warning("❌ Binance response missing price field")
+        else:
+            logger.warning(f"❌ Binance HTTP error: {response.status_code}")
+            
     except Exception as e:
-        print(f"❌ Binance failed: {e}")
+        logger.error(f"❌ Binance failed: {str(e)}")
     
     return None
 
 def get_oanda_gold_price():
     """جلب سعر الذهب من OANDA API (مصدر احتياطي)"""
     try:
+        logger.info("🔍 جرب جلب سعر من OANDA...")
         # استخدام API key من متغير البيئة
         api_key = os.getenv("OANDA_API_KEY", "demo")
         account_id = os.getenv("OANDA_ACCOUNT_ID", "101-004-1234567-001")
@@ -416,89 +427,82 @@ def get_oanda_gold_price():
         params = {'instruments': 'XAU_USD'}
         
         response = requests.get(url, headers=headers, params=params, timeout=10)
-        data = response.json()
         
-        if 'prices' in data and len(data['prices']) > 0:
-            price = float(data['prices'][0]['bids'][0]['price'])
-            if 1500 <= price <= 2500:
-                return price, "OANDA (XAU/USD)"
+        if response.status_code == 200:
+            data = response.json()
+            
+            if 'prices' in data and len(data['prices']) > 0:
+                price = float(data['prices'][0]['bids'][0]['price'])
+                if 1500 <= price <= 2500:
+                    logger.info(f"✅ OANDA price: ${price:,.2f}")
+                    return price, "OANDA (XAU/USD)"
+                else:
+                    logger.warning(f"❌ سعر غير واقعي من OANDA: ${price:,.2f}")
+            else:
+                logger.warning("❌ OANDA response missing prices field")
+        else:
+            logger.warning(f"❌ OANDA HTTP error: {response.status_code}")
+            
     except Exception as e:
-        print(f"❌ OANDA failed: {e}")
+        logger.error(f"❌ OANDA failed: {str(e)}")
     
     return None
 
 def get_fmp_gold_price():
     """جلب سعر الذهب من Financial Modeling Prep API"""
     try:
+        logger.info("🔍 جرب جلب سعر من FMP...")
         api_key = os.getenv("FMP_API_KEY", "demo")
         url = f"https://financialmodelingprep.com/api/v3/quote/XAUUSD?apikey={api_key}"
         response = requests.get(url, timeout=8)
-        data = response.json()
         
-        if data and len(data) > 0 and 'price' in data[0]:
-            price = data[0]['price']
-            if 1500 <= price <= 2500:
-                return price, "Financial Modeling Prep"
+        if response.status_code == 200:
+            data = response.json()
+            
+            if data and len(data) > 0 and 'price' in data[0]:
+                price = data[0]['price']
+                if 1500 <= price <= 2500:
+                    logger.info(f"✅ FMP price: ${price:,.2f}")
+                    return price, "Financial Modeling Prep"
+                else:
+                    logger.warning(f"❌ سعر غير واقعي من FMP: ${price:,.2f}")
+            else:
+                logger.warning("❌ FMP response missing price field")
+        else:
+            logger.warning(f"❌ FMP HTTP error: {response.status_code}")
+            
     except Exception as e:
-        print(f"❌ FMP API failed: {e}")
+        logger.error(f"❌ FMP API failed: {str(e)}")
     
     return None
 
-def get_fallback_gold_price():
-    """سعر افتراضي بناء على متوسط السوق"""
-    try:
-        # متوسط أسعار الذهب الحقيقية
-        base_price = 1985.50  # سعر وسطي واقعي
-        
-        # تقلبات واقعية بناء على الوقت
-        current_hour = datetime.now().hour
-        volatility = 0.5  # تقلبات صغيرة
-        
-        if 9 <= current_hour <= 17:  # ساعات التداول الرئيسية
-            volatility = 1.2
-        elif 0 <= current_hour <= 5:  # ساعات الهدوء
-            volatility = 0.3
-            
-        price_variation = random.uniform(-volatility, volatility)
-        realistic_price = base_price + price_variation
-        
-        return realistic_price, "Market Average (Fallback)"
-    except Exception as e:
-        print(f"❌ Fallback failed: {e}")
-        return 1985.0, "Default Price"
-
 def get_live_gold_price():
-    """نظام جلب أسعار ذهب موثوق من مصادر حقيقية"""
+    """نظام جلب أسعار ذهب موثوق من مصادر حقيقية فقط"""
     sources = [
         get_binance_gold_price,     # المصدر الرئيسي
         get_oanda_gold_price,       # مصدر احتياطي
         get_fmp_gold_price,         # مصدر إضافي
-        get_fallback_gold_price     # حل احتياطي ذكي
     ]
-    
-    successful_prices = []
     
     for source in sources:
         try:
             result = source()
             if result:
                 price, source_name = result
-                successful_prices.append((price, source_name))
-                print(f"✅ تم جلب السعر من {source_name}: ${price:,.2f}")
-                break  # نكتفي بأول مصدر ناجح
+                logger.info(f"🎯 تم جلب السعر الحقيقي من {source_name}: ${price:,.2f}")
+                return price, source_name
         except Exception as e:
-            print(f"❌ فشل {source.__name__}: {e}")
+            logger.error(f"❌ فشل {source.__name__}: {e}")
             continue
     
-    if successful_prices:
-        return successful_prices[0]
-    
-    print("❌ فشلت جميع مصادر البيانات، استخدام السعر الافتراضي")
-    return 1985.0, "Default Price"
+    # إذا فشلت كل المصادر الحقيقية، نرجع خطأ مش بيانات وهمية
+    logger.error("❌ فشلت جميع مصادر البيانات الحقيقية")
+    return None, "فشل في جلب البيانات الحقيقية"
 
 def fetch_binance_ohlcv(symbol="XAUUSDT", interval="15m", limit=100):
     """جلب بيانات OHLCV حقيقية من Binance"""
     try:
+        logger.info(f"🔍 جرب جلب بيانات OHLCV من Binance...")
         url = f"https://api.binance.com/api/v3/klines"
         params = {
             'symbol': symbol,
@@ -507,31 +511,36 @@ def fetch_binance_ohlcv(symbol="XAUUSDT", interval="15m", limit=100):
         }
         
         response = requests.get(url, params=params, timeout=10)
-        data = response.json()
         
-        # تحويل البيانات إلى DataFrame
-        df = pd.DataFrame(data, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_asset_volume', 'number_of_trades',
-            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-        ])
-        
-        # تحويل الأنواع
-        df['open'] = df['open'].astype(float)
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
-        df['close'] = df['close'].astype(float)
-        df['volume'] = df['volume'].astype(float)
-        
-        print(f"✅ تم جلب {len(df)} شمعة حقيقية من Binance")
-        return df[['open', 'high', 'low', 'close', 'volume']]
-        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # تحويل البيانات إلى DataFrame
+            df = pd.DataFrame(data, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_asset_volume', 'number_of_trades',
+                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+            ])
+            
+            # تحويل الأنواع
+            df['open'] = df['open'].astype(float)
+            df['high'] = df['high'].astype(float)
+            df['low'] = df['low'].astype(float)
+            df['close'] = df['close'].astype(float)
+            df['volume'] = df['volume'].astype(float)
+            
+            logger.info(f"✅ تم جلب {len(df)} شمعة حقيقية من Binance")
+            return df[['open', 'high', 'low', 'close', 'volume']]
+        else:
+            logger.warning(f"❌ Binance OHLCV HTTP error: {response.status_code}")
+            
     except Exception as e:
-        print(f"❌ فشل جلب بيانات OHLCV من Binance: {e}")
-        return pd.DataFrame()
+        logger.error(f"❌ فشل جلب بيانات OHLCV من Binance: {e}")
+    
+    return pd.DataFrame()
 
 def fetch_live_ohlcv(timeframe: str = "15m", limit: int = 100):
-    """جلب بيانات OHLCV واقعية من مصادر حقيقية"""
+    """جلب بيانات OHLCV حقيقية من Binance فقط"""
     try:
         # تحويل timeframe إلى تنسيق Binance
         tf_mapping = {
@@ -544,11 +553,13 @@ def fetch_live_ohlcv(timeframe: str = "15m", limit: int = 100):
         
         if not df.empty:
             return df
+        else:
+            logger.error("❌ فشل جلب بيانات OHLCV من Binance")
+            return pd.DataFrame()
             
     except Exception as e:
-        print(f"❌ فشل جلب بيانات OHLCV: {e}")
-    
-    return pd.DataFrame()
+        logger.error(f"❌ فشل جلب بيانات OHLCV: {e}")
+        return pd.DataFrame()
 
 # =============== استراتيجيات تحليل محسنة مع مؤشرات حقيقية ===============
 def price_action_breakout_strategy(df):
@@ -613,7 +624,7 @@ def rsi_momentum_strategy(df):
                 "strategy": "RSI_MOMENTUM"
             }
     except Exception as e:
-        print(f"❌ خطأ في حساب RSI: {e}")
+        logger.error(f"❌ خطأ في حساب RSI: {e}")
     
     return {"action": "HOLD", "confidence": 0.0, "reason": "RSI في منطقة محايدة", "strategy": "RSI_MOMENTUM"}
 
@@ -700,7 +711,7 @@ def macd_strategy(df):
             }
             
     except Exception as e:
-        print(f"❌ خطأ في حساب MACD: {e}")
+        logger.error(f"❌ خطأ في حساب MACD: {e}")
     
     return {"action": "HOLD", "confidence": 0.0, "reason": "لا توجد إشارة من MACD", "strategy": "MACD"}
 
@@ -794,7 +805,11 @@ def get_professional_analysis(min_filters):
         if df_15m.empty:
             return "❌ لا توجد بيانات كافية للتحليل", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE", 0, []
         
-        current_price, source = get_live_gold_price()
+        current_price_result = get_live_gold_price()
+        if current_price_result[0] is None:
+            return "❌ فشل جلب السعر الحقيقي من السوق", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE", 0, []
+            
+        current_price, source = current_price_result
 
         # تطبيق جميع الاستراتيجيات
         strategies = [
@@ -831,6 +846,7 @@ def get_professional_analysis(min_filters):
                                    entry, tp, sl, atr, strategies, valid_strategies, min_filters)
         
     except Exception as e:
+        logger.error(f"❌ خطأ في التحليل: {str(e)}")
         return f"❌ خطأ في التحليل: {str(e)}", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE", 0, []
 
 def generate_hold_analysis(current_price, source, strategies, valid_strategies, min_filters):
@@ -1246,6 +1262,10 @@ async def back_to_user_menu(msg: types.Message):
 async def get_current_price(msg: types.Message):
     try:
         current_price, source = get_live_gold_price()
+        if current_price is None:
+            await msg.reply("❌ فشل جلب السعر الحقيقي من السوق. يرجى المحاولة لاحقاً.")
+            return
+            
         price_msg = f"""
 💰 **السعر الحي للذهب (XAUUSD)**
 ━━━━━━━━━━━━━━━
@@ -1257,7 +1277,8 @@ async def get_current_price(msg: types.Message):
 """
         await msg.reply(price_msg, parse_mode="HTML")
     except Exception as e:
-        await msg.reply("💰 **السعر التقريبي للذهب:** $1,985.50 ± $2.00")
+        logger.error(f"❌ خطأ في جلب السعر: {e}")
+        await msg.reply("❌ فشل جلب السعر الحقيقي من السوق.")
 
 @dp.message(F.text == "🔍 الصفقات النشطة")
 async def show_active_trades(msg: types.Message):
@@ -1381,19 +1402,19 @@ async def about_bot(msg: types.Message):
 async def send_vip_trade_signal_98():
     active_trades = get_active_trades()
     if len(active_trades) > 0:
-        print("🤖 يوجد صفقات نشطة. تخطي التحليل.")
+        logger.info("🤖 يوجد صفقات نشطة. تخطي التحليل.")
         return 
 
     try:
         analysis_msg, confidence, action, entry, sl, tp, sl_distance, trade_type, filters_passed, strategy_details = get_professional_analysis(MIN_FILTERS_FOR_98)
     except Exception as e:
-        print(f"❌ خطأ في التحليل التلقائي: {e}")
+        logger.error(f"❌ خطأ في التحليل التلقائي: {e}")
         return
 
     confidence_percent = confidence * 100
 
     if action != "HOLD" and confidence >= CONFIDENCE_THRESHOLD_98:
-        print(f"✅ إشارة {action} قوية ({confidence_percent:.2f}%). جارٍ الإرسال...")
+        logger.info(f"✅ إشارة {action} قوية ({confidence_percent:.2f}%). جارٍ الإرسال...")
         
         trade_msg = f"""
 🚨 **إشارة VIP تلقائية!**
@@ -1425,7 +1446,7 @@ async def send_trade_signal_90():
     try:
         analysis_msg, confidence, action, entry, sl, tp, sl_distance, trade_type, filters_passed, strategy_details = get_professional_analysis(MIN_FILTERS_FOR_90)
     except Exception as e:
-        print(f"❌ خطأ في التحليل (85%): {e}")
+        logger.error(f"❌ خطأ في التحليل (85%): {e}")
         return
 
     confidence_percent = confidence * 100
@@ -1449,9 +1470,14 @@ async def check_open_trades():
         return
 
     try:
-        current_price, source = get_live_gold_price()
+        current_price_result = get_live_gold_price()
+        if current_price_result[0] is None:
+            logger.error("❌ فشل جلب السعر لمتابعة الصفقات")
+            return
+            
+        current_price, source = current_price_result
     except Exception as e:
-        print(f"❌ فشل متابعة الصفقات: {e}")
+        logger.error(f"❌ فشل متابعة الصفقات: {e}")
         return
 
     closed_count = 0
@@ -1575,7 +1601,7 @@ async def trade_monitoring_98_percent():
         if not is_weekend_closure():
             await send_vip_trade_signal_98()
         else:
-            print("🤖 السوق مغلق - إيقاف التحليل.")
+            logger.info("🤖 السوق مغلق - إيقاف التحليل.")
             
         await asyncio.sleep(TRADE_ANALYSIS_INTERVAL_98)
 
@@ -1585,7 +1611,7 @@ async def trade_monitoring_90_percent():
         if not is_weekend_closure():
             await send_trade_signal_90()
         else:
-            print("🤖 السوق مغلق - إيقاف التحليل.")
+            logger.info("🤖 السوق مغلق - إيقاف التحليل.")
             
         await asyncio.sleep(TRADE_ANALYSIS_INTERVAL_90)
 
@@ -1606,6 +1632,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("🤖 تم إيقاف البوت.")
+        logger.info("🤖 تم إيقاف البوت.")
     except Exception as e:
-        print(f"حدث خطأ: {e}")
+        logger.error(f"حدث خطأ: {e}")
