@@ -1,8 +1,8 @@
 aiogram>=3.4.0
-yfinance
-schedule
-pandas
-psycopg2-binary
-ccxt
-requests
-beautifulsoup4
+yfinance>=0.2.0
+pandas>=2.0.0
+psycopg2-binary>=2.9.0
+requests>=2.28.0
+ta>=0.10.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
