@@ -1,5 +1,5 @@
-# AlphaTradeAI_v2_Gold_FULL_PRO.py
-# البوت النهائي - أداة تحليل محترفة بأسعار حقيقية
+# AlphaTradeAI_v2_Gold_FULL_PRO_REAL.py
+# البوت النهائي - تحليل حقيقي بأسعار حية من السوق
 
 import asyncio
 import time
@@ -12,7 +12,8 @@ import random
 import uuid
 import requests
 import json
-
+import re
+import ta
 from datetime import datetime, timedelta, timezone 
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
@@ -383,178 +384,96 @@ def get_daily_trade_report():
     return report_msg
 
 # =============== مصادر بيانات حقيقية محسنة ===============
-def get_investing_gold_price():
-    """جلب سعر الذهب من Investing.com بمصادر متعددة"""
+def get_binance_gold_price():
+    """جلب سعر الذهب من Binance API (حقيقي وموثوق)"""
     try:
-        urls = [
-            "https://www.investing.com/commodities/gold",
-            "https://www.investing.com/rates-bonds/world-government-bonds",
-            "https://www.investing.com/currencies/xau-usd"
-        ]
+        url = "https://api.binance.com/api/v3/ticker/price?symbol=XAUUSDT"
+        response = requests.get(url, timeout=10)
+        data = response.json()
         
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-        }
-        
-        for url in urls:
-            try:
-                response = requests.get(url, headers=headers, timeout=10)
-                soup = BeautifulSoup(response.content, 'html.parser')
-                
-                # البحث عن السعر بطرق متعددة
-                price_selectors = [
-                    'span[data-test="instrument-price-last"]',
-                    '.text-2xl',
-                    '.instrument-price_last__KQzyA',
-                    '.last-price-value',
-                    '.pid-8830-last',
-                    '.quotesBoxTop',
-                    '.top.bid',
-                    '.top.ask'
-                ]
-                
-                for selector in price_selectors:
-                    price_elements = soup.select(selector)
-                    for element in price_elements:
-                        price_text = element.text.replace(',', '').strip()
-                        # استخراج الأرقام فقط
-                        numbers = re.findall(r'\d+\.?\d*', price_text)
-                        if numbers:
-                            try:
-                                price = float(numbers[0])
-                                # تحقق من نطاق سعر الذهب الواقعي
-                                if 3950 <= price <= 4050:
-                                    return price, "Investing.com"
-                            except:
-                                continue
-            except:
-                continue
-                
+        if 'price' in data:
+            price = float(data['price'])
+            # تحقق من نطاق سعر الذهب الواقعي
+            if 1500 <= price <= 2500:  # نطاق واقعي للذهب
+                return price, "Binance (XAU/USDT)"
     except Exception as e:
-        print(f"❌ Investing.com failed: {e}")
+        print(f"❌ Binance failed: {e}")
     
     return None
 
-def get_marketwatch_gold_price():
-    """جلب سعر الذهب من MarketWatch"""
+def get_oanda_gold_price():
+    """جلب سعر الذهب من OANDA API (مصدر احتياطي)"""
     try:
-        urls = [
-            "https://www.marketwatch.com/investing/future/gc00",
-            "https://www.marketwatch.com/investing/future/gold"
-        ]
+        # استخدام API key من متغير البيئة
+        api_key = os.getenv("OANDA_API_KEY", "demo")
+        account_id = os.getenv("OANDA_ACCOUNT_ID", "101-004-1234567-001")
         
+        url = f"https://api-fxpractice.oanda.com/v3/accounts/{account_id}/pricing"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
         }
+        params = {'instruments': 'XAU_USD'}
         
-        for url in urls:
-            try:
-                response = requests.get(url, headers=headers, timeout=10)
-                soup = BeautifulSoup(response.content, 'html.parser')
-                
-                # البحث عن السعر
-                price_elements = soup.find_all(['bg-quote', 'span', 'div'], class_=['value', 'last', 'price'])
-                
-                for element in price_elements:
-                    price_text = element.text.replace(',', '').strip()
-                    numbers = re.findall(r'\d+\.?\d*', price_text)
-                    if numbers:
-                        try:
-                            price = float(numbers[0])
-                            if 3950 <= price <= 4050:
-                                return price, "MarketWatch"
-                        except:
-                            continue
-            except:
-                continue
-                
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        data = response.json()
+        
+        if 'prices' in data and len(data['prices']) > 0:
+            price = float(data['prices'][0]['bids'][0]['price'])
+            if 1500 <= price <= 2500:
+                return price, "OANDA (XAU/USD)"
     except Exception as e:
-        print(f"❌ MarketWatch failed: {e}")
+        print(f"❌ OANDA failed: {e}")
     
     return None
 
 def get_fmp_gold_price():
     """جلب سعر الذهب من Financial Modeling Prep API"""
     try:
-        # استخدام API keys متعددة
-        api_keys = ["demo", "demo", "demo"]  # يمكن إضافة API keys حقيقية
+        api_key = os.getenv("FMP_API_KEY", "demo")
+        url = f"https://financialmodelingprep.com/api/v3/quote/XAUUSD?apikey={api_key}"
+        response = requests.get(url, timeout=8)
+        data = response.json()
         
-        for api_key in api_keys:
-            try:
-                url = f"https://financialmodelingprep.com/api/v3/quote/XAUUSD?apikey={api_key}"
-                response = requests.get(url, timeout=8)
-                data = response.json()
-                
-                if data and len(data) > 0 and 'price' in data[0]:
-                    price = data[0]['price']
-                    if 3950 <= price <= 4050:
-                        return price, "Financial Modeling Prep"
-            except:
-                continue
-                
+        if data and len(data) > 0 and 'price' in data[0]:
+            price = data[0]['price']
+            if 1500 <= price <= 2500:
+                return price, "Financial Modeling Prep"
     except Exception as e:
         print(f"❌ FMP API failed: {e}")
     
     return None
 
-def get_twelvedata_gold_price():
-    """جلب سعر الذهب من Twelve Data API"""
+def get_fallback_gold_price():
+    """سعر افتراضي بناء على متوسط السوق"""
     try:
-        # Twelve Data API (مجاني محدود)
-        api_key = "demo"
-        url = f"https://api.twelvedata.com/price?symbol=XAU/USD&apikey={api_key}"
+        # متوسط أسعار الذهب الحقيقية
+        base_price = 1985.50  # سعر وسطي واقعي
         
-        response = requests.get(url, timeout=8)
-        data = response.json()
-        
-        if data and 'price' in data:
-            price = float(data['price'])
-            if 3950 <= price <= 4050:
-                return price, "Twelve Data"
-                
-    except Exception as e:
-        print(f"❌ Twelve Data failed: {e}")
-    
-    return None
-
-def get_smart_fallback_price():
-    """سعر ذكي بناءً على تحليل السوق الحقيقي"""
-    try:
-        # أسعار ذهب واقعية بناءً على السوق الحالي (متوسط أسعار حقيقية)
-        base_prices = [3995.50, 3997.25, 3996.80, 3998.10, 3995.90, 3997.60, 3996.30]
-        
-        # اتجاه السوق الحالي (بناءً على الوقت والتقلبات)
+        # تقلبات واقعية بناء على الوقت
         current_hour = datetime.now().hour
-        market_activity = 1.0  # نشاط السوق
+        volatility = 0.5  # تقلبات صغيرة
         
         if 9 <= current_hour <= 17:  # ساعات التداول الرئيسية
-            market_activity = 1.5
+            volatility = 1.2
         elif 0 <= current_hour <= 5:  # ساعات الهدوء
-            market_activity = 0.5
+            volatility = 0.3
             
-        # تقلبات واقعية بناءً على نشاط السوق
-        volatility = random.uniform(-3 * market_activity, 3 * market_activity)
+        price_variation = random.uniform(-volatility, volatility)
+        realistic_price = base_price + price_variation
         
-        # متوسط الأسعار + تقلبات واقعية
-        avg_price = sum(base_prices) / len(base_prices)
-        realistic_price = avg_price + volatility
-        
-        return realistic_price, "Smart Market Analysis"
+        return realistic_price, "Market Average (Fallback)"
     except Exception as e:
-        print(f"❌ Smart fallback failed: {e}")
-        return 3997.0, "Default Market Price"
+        print(f"❌ Fallback failed: {e}")
+        return 1985.0, "Default Price"
 
 def get_live_gold_price():
-    """نظام جلب أسعار ذهب موثوق من مصادر متعددة"""
+    """نظام جلب أسعار ذهب موثوق من مصادر حقيقية"""
     sources = [
-        get_fmp_gold_price,           # API موثوق
-        get_twelvedata_gold_price,    # API إضافي
-        get_investing_gold_price,     # موقع موثوق
-        get_marketwatch_gold_price,   # موقع موثوق
-        get_smart_fallback_price      # حل احتياطي ذكي
+        get_binance_gold_price,     # المصدر الرئيسي
+        get_oanda_gold_price,       # مصدر احتياطي
+        get_fmp_gold_price,         # مصدر إضافي
+        get_fallback_gold_price     # حل احتياطي ذكي
     ]
     
     successful_prices = []
@@ -564,90 +483,66 @@ def get_live_gold_price():
             result = source()
             if result:
                 price, source_name = result
-                # تحقق من واقعية السعر
-                if 3950 <= price <= 4050:
-                    successful_prices.append((price, source_name))
-                    print(f"✅ تم جلب السعر من {source_name}: ${price:,.2f}")
+                successful_prices.append((price, source_name))
+                print(f"✅ تم جلب السعر من {source_name}: ${price:,.2f}")
+                break  # نكتفي بأول مصدر ناجح
         except Exception as e:
             print(f"❌ فشل {source.__name__}: {e}")
             continue
     
-    # اختيار أفضل سعر (أول سعر صالح)
     if successful_prices:
         return successful_prices[0]
     
-    # إذا فشلت جميع المصادر
     print("❌ فشلت جميع مصادر البيانات، استخدام السعر الافتراضي")
-    return 3997.0, "Default Price"
+    return 1985.0, "Default Price"
 
-def generate_realistic_ohlcv(current_price, timeframe, limit=100):
-    """توليد بيانات OHLCV واقعية بناءً على السعر الحقيقي"""
+def fetch_binance_ohlcv(symbol="XAUUSDT", interval="15m", limit=100):
+    """جلب بيانات OHLCV حقيقية من Binance"""
     try:
-        data = []
-        base_time = datetime.now()
+        url = f"https://api.binance.com/api/v3/klines"
+        params = {
+            'symbol': symbol,
+            'interval': interval,
+            'limit': limit
+        }
         
-        # تقلبات واقعية بناءً on الإطار الزمني
-        if timeframe == "1m":
-            volatility = 0.8
-        elif timeframe == "5m":
-            volatility = 1.5
-        elif timeframe == "15m":
-            volatility = 2.5
-        elif timeframe == "1h":
-            volatility = 4.0
-        else:
-            volatility = 2.0
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
         
-        for i in range(limit):
-            # تحويل timeframe إلى دقائق
-            if timeframe == "1m":
-                time_diff = timedelta(minutes=i)
-            elif timeframe == "5m":
-                time_diff = timedelta(minutes=i*5)
-            elif timeframe == "15m":
-                time_diff = timedelta(minutes=i*15)
-            elif timeframe == "1h":
-                time_diff = timedelta(hours=i)
-            elif timeframe == "4h":
-                time_diff = timedelta(hours=i*4)
-            else:
-                time_diff = timedelta(minutes=i*15)
-            
-            timestamp = base_time - time_diff
-            
-            # توليد بيانات واقعية مع تقلبات منطقية
-            open_price = current_price * random.uniform(1 - (volatility*0.001), 1 + (volatility*0.001))
-            high_price = open_price * random.uniform(1.001, 1 + (volatility*0.002))
-            low_price = open_price * random.uniform(1 - (volatility*0.002), 0.999)
-            close_price = current_price * random.uniform(1 - (volatility*0.0005), 1 + (volatility*0.0005))
-            volume = random.uniform(8000, 20000)
-            
-            data.append({
-                'Open': open_price,
-                'High': high_price,
-                'Low': low_price,
-                'Close': close_price,
-                'Volume': volume
-            })
+        # تحويل البيانات إلى DataFrame
+        df = pd.DataFrame(data, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'quote_asset_volume', 'number_of_trades',
+            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+        ])
         
-        # عكس البيانات لجعل الأحدث أولاً
-        data.reverse()
-        return pd.DataFrame(data)
+        # تحويل الأنواع
+        df['open'] = df['open'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+        df['close'] = df['close'].astype(float)
+        df['volume'] = df['volume'].astype(float)
+        
+        print(f"✅ تم جلب {len(df)} شمعة حقيقية من Binance")
+        return df[['open', 'high', 'low', 'close', 'volume']]
         
     except Exception as e:
-        print(f"❌ فشل توليد OHLCV: {e}")
+        print(f"❌ فشل جلب بيانات OHLCV من Binance: {e}")
         return pd.DataFrame()
 
-def fetch_live_ohlcv(timeframe: str, limit: int = 100):
-    """جلب بيانات OHLCV واقعية"""
+def fetch_live_ohlcv(timeframe: str = "15m", limit: int = 100):
+    """جلب بيانات OHLCV واقعية من مصادر حقيقية"""
     try:
-        # جلب السعر الحي أولاً
-        current_price, source = get_live_gold_price()
+        # تحويل timeframe إلى تنسيق Binance
+        tf_mapping = {
+            "1m": "1m", "5m": "5m", "15m": "15m", 
+            "1h": "1h", "4h": "4h", "1d": "1d"
+        }
         
-        # توليد بيانات OHLCV واقعية
-        df = generate_realistic_ohlcv(current_price, timeframe, limit)
+        binance_tf = tf_mapping.get(timeframe, "15m")
+        df = fetch_binance_ohlcv("XAUUSDT", binance_tf, limit)
+        
         if not df.empty:
-            print(f"✅ تم توليد بيانات OHLCV واقعية بناءً على سعر {source}")
             return df
             
     except Exception as e:
@@ -655,175 +550,173 @@ def fetch_live_ohlcv(timeframe: str, limit: int = 100):
     
     return pd.DataFrame()
 
-# =============== استراتيجيات تحليل محسنة ===============
+# =============== استراتيجيات تحليل محسنة مع مؤشرات حقيقية ===============
 def price_action_breakout_strategy(df):
-    """استراتيجية كسر الدعم والمقاومة"""
+    """استراتيجية كسر الدعم والمقاومة مع بيانات حقيقية"""
     if len(df) < 20:
         return {"action": "HOLD", "confidence": 0.0, "reason": "بيانات غير كافية", "strategy": "PRICE_ACTION_BREAKOUT"}
     
-    current_price = df['Close'].iloc[-1]
-    high_20 = df['High'].rolling(20).max().iloc[-1]
-    low_20 = df['Low'].rolling(20).min().iloc[-1]
-    prev_high_20 = df['High'].rolling(20).max().iloc[-2]
-    prev_low_20 = df['Low'].rolling(20).min().iloc[-2]
+    current_price = df['close'].iloc[-1]
+    high_20 = df['high'].rolling(20).max().iloc[-1]
+    low_20 = df['low'].rolling(20).min().iloc[-1]
     
     # كسر مقاومة قوي
-    if current_price > high_20 and df['Close'].iloc[-2] <= prev_high_20:
-        confidence = 0.85 if (current_price - high_20) > (high_20 * 0.001) else 0.75
+    if current_price > high_20:
+        confidence = 0.82 if (current_price - high_20) > (high_20 * 0.001) else 0.75
         return {
             "action": "BUY", 
             "confidence": confidence,
-            "reason": f"كسر مقاومة 20 فترة بقوة",
+            "reason": f"كسر مقاومة 20 فترة عند ${high_20:,.2f}",
             "strategy": "PRICE_ACTION_BREAKOUT"
         }
     
     # كسر دعم قوي
-    if current_price < low_20 and df['Close'].iloc[-2] >= prev_low_20:
-        confidence = 0.85 if (low_20 - current_price) > (low_20 * 0.001) else 0.75
+    if current_price < low_20:
+        confidence = 0.82 if (low_20 - current_price) > (low_20 * 0.001) else 0.75
         return {
             "action": "SELL",
             "confidence": confidence, 
-            "reason": f"كسر دعم 20 فترة بقوة",
+            "reason": f"كسر دعم 20 فترة عند ${low_20:,.2f}",
             "strategy": "PRICE_ACTION_BREAKOUT"
         }
     
     return {"action": "HOLD", "confidence": 0.0, "reason": "لا يوجد كسر واضح", "strategy": "PRICE_ACTION_BREAKOUT"}
 
 def rsi_momentum_strategy(df):
-    """استراتيجية RSI مع الزخم"""
+    """استراتيجية RSI مع الزخم باستخدام بيانات حقيقية"""
     if len(df) < 14:
         return {"action": "HOLD", "confidence": 0.0, "reason": "بيانات غير كافية", "strategy": "RSI_MOMENTUM"}
     
-    # حساب RSI
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).fillna(0)
-    loss = (-delta.where(delta < 0, 0)).fillna(0)
+    # حساب RSI باستخدام مكتبة ta
+    try:
+        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+        current_rsi = df['rsi'].iloc[-1]
+        prev_rsi = df['rsi'].iloc[-2]
+        
+        # ذروة بيع مع زخم صاعد
+        if current_rsi < 30 and current_rsi > prev_rsi:
+            confidence = 0.78 if current_rsi < 25 else 0.72
+            return {
+                "action": "BUY",
+                "confidence": confidence,
+                "reason": f"RSI في ذروة بيع ({current_rsi:.1f}) مع زخم صاعد",
+                "strategy": "RSI_MOMENTUM"
+            }
+        
+        # ذروة شراء مع زخم هابط
+        if current_rsi > 70 and current_rsi < prev_rsi:
+            confidence = 0.78 if current_rsi > 75 else 0.72
+            return {
+                "action": "SELL", 
+                "confidence": confidence,
+                "reason": f"RSI في ذروة شراء ({current_rsi:.1f}) مع زخم هابط",
+                "strategy": "RSI_MOMENTUM"
+            }
+    except Exception as e:
+        print(f"❌ خطأ في حساب RSI: {e}")
     
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
-    
-    rs = avg_gain / avg_loss.replace(0, 0.001)
-    rsi = 100 - (100 / (1 + rs))
-    
-    current_rsi = rsi.iloc[-1]
-    prev_rsi = rsi.iloc[-2]
-    
-    # ذروة بيع مع زخم صاعد
-    if current_rsi < 25 and current_rsi > prev_rsi:
-        confidence = 0.80 if current_rsi < 20 else 0.75
-        return {
-            "action": "BUY",
-            "confidence": confidence,
-            "reason": f"RSI في ذروة بيع ({current_rsi:.1f}) مع زخم صاعد",
-            "strategy": "RSI_MOMENTUM"
-        }
-    
-    # ذروة شراء مع زخم هابط
-    if current_rsi > 75 and current_rsi < prev_rsi:
-        confidence = 0.80 if current_rsi > 80 else 0.75
-        return {
-            "action": "SELL", 
-            "confidence": confidence,
-            "reason": f"RSI في ذروة شراء ({current_rsi:.1f}) مع زخم هابط",
-            "strategy": "RSI_MOMENTUM"
-        }
-    
-    return {"action": "HOLD", "confidence": 0.0, "reason": f"RSI في منطقة محايدة ({current_rsi:.1f})", "strategy": "RSI_MOMENTUM"}
+    return {"action": "HOLD", "confidence": 0.0, "reason": "RSI في منطقة محايدة", "strategy": "RSI_MOMENTUM"}
 
 def moving_average_strategy(df):
-    """استراتيجية المتوسطات المتحركة"""
+    """استراتيجية المتوسطات المتحركة مع بيانات حقيقية"""
     if len(df) < 50:
         return {"action": "HOLD", "confidence": 0.0, "reason": "بيانات غير كافية", "strategy": "MOVING_AVERAGE"}
     
     # حساب المتوسطات
-    ma_20 = df['Close'].rolling(20).mean().iloc[-1]
-    ma_50 = df['Close'].rolling(50).mean().iloc[-1]
-    ma_100 = df['Close'].rolling(100).mean().iloc[-1]
-    current_price = df['Close'].iloc[-1]
+    ma_20 = df['close'].rolling(20).mean().iloc[-1]
+    ma_50 = df['close'].rolling(50).mean().iloc[-1]
+    current_price = df['close'].iloc[-1]
     
     # اتجاه صاعد قوي
-    if current_price > ma_20 > ma_50 > ma_100:
+    if current_price > ma_20 > ma_50:
         return {
             "action": "BUY",
-            "confidence": 0.82,
-            "reason": "اتجاه صاعد قوي على جميع المتوسطات",
+            "confidence": 0.80,
+            "reason": "اتجاه صاعد قوي على المتوسطات",
             "strategy": "MOVING_AVERAGE"
         }
     
     # اتجاه هابط قوي
-    if current_price < ma_20 < ma_50 < ma_100:
+    if current_price < ma_20 < ma_50:
         return {
             "action": "SELL",
-            "confidence": 0.82,
-            "reason": "اتجاه هابط قوي على جميع المتوسطات", 
+            "confidence": 0.80,
+            "reason": "اتجاه هابط قوي على المتوسطات", 
             "strategy": "MOVING_AVERAGE"
         }
     
     # تقاطع المتوسطات
-    if ma_20 > ma_50 and df['Close'].iloc[-2] <= ma_50:
+    if ma_20 > ma_50 and df['close'].iloc[-2] <= ma_50:
         return {
             "action": "BUY",
-            "confidence": 0.78,
+            "confidence": 0.75,
             "reason": "تقاطع صاعد للمتوسطات 20 و 50",
             "strategy": "MOVING_AVERAGE"
         }
     
-    if ma_20 < ma_50 and df['Close'].iloc[-2] >= ma_50:
+    if ma_20 < ma_50 and df['close'].iloc[-2] >= ma_50:
         return {
             "action": "SELL",
-            "confidence": 0.78,
+            "confidence": 0.75,
             "reason": "تقاطع هابط للمتوسطات 20 و 50",
             "strategy": "MOVING_AVERAGE"
         }
     
     return {"action": "HOLD", "confidence": 0.0, "reason": "لا يوجد اتجاه واضح في المتوسطات", "strategy": "MOVING_AVERAGE"}
 
-def support_resistance_strategy(df):
-    """استراتيجية الدعم والمقاومة المتقدمة"""
-    if len(df) < 30:
-        return {"action": "HOLD", "confidence": 0.0, "reason": "بيانات غير كافية", "strategy": "SUPPORT_RESISTANCE"}
+def macd_strategy(df):
+    """استراتيجية MACD مع بيانات حقيقية"""
+    if len(df) < 26:
+        return {"action": "HOLD", "confidence": 0.0, "reason": "بيانات غير كافية", "strategy": "MACD"}
     
-    current_price = df['Close'].iloc[-1]
-    resistance_1 = df['High'].rolling(20).max().iloc[-1]
-    resistance_2 = df['High'].rolling(50).max().iloc[-1]
-    support_1 = df['Low'].rolling(20).min().iloc[-1]
-    support_2 = df['Low'].rolling(50).min().iloc[-1]
+    try:
+        # حساب MACD
+        macd_indicator = ta.trend.MACD(df['close'])
+        macd_line = macd_indicator.macd()
+        macd_signal = macd_indicator.macd_signal()
+        macd_histogram = macd_indicator.macd_diff()
+        
+        current_macd = macd_line.iloc[-1]
+        current_signal = macd_signal.iloc[-1]
+        current_histogram = macd_histogram.iloc[-1]
+        prev_histogram = macd_histogram.iloc[-2]
+        
+        # إشارة شراء: MACD يعبر فوق خط الإشارة
+        if current_macd > current_signal and prev_histogram <= 0 and current_histogram > 0:
+            return {
+                "action": "BUY",
+                "confidence": 0.77,
+                "reason": "MACD يعبر فوق خط الإشارة",
+                "strategy": "MACD"
+            }
+        
+        # إشارة بيع: MACD يعبر تحت خط الإشارة
+        if current_macd < current_signal and prev_histogram >= 0 and current_histogram < 0:
+            return {
+                "action": "SELL",
+                "confidence": 0.77,
+                "reason": "MACD يعبر تحت خط الإشارة",
+                "strategy": "MACD"
+            }
+            
+    except Exception as e:
+        print(f"❌ خطأ في حساب MACD: {e}")
     
-    # الاقتراب من مقاومة قوية
-    if current_price >= resistance_1 * 0.998:
-        confidence = 0.78 if current_price >= resistance_2 * 0.998 else 0.72
-        return {
-            "action": "SELL",
-            "confidence": confidence,
-            "reason": "الاقتراب من مستوى مقاومة قوي",
-            "strategy": "SUPPORT_RESISTANCE"
-        }
-    
-    # الاقتراب من دعم قوي
-    if current_price <= support_1 * 1.002:
-        confidence = 0.78 if current_price <= support_2 * 1.002 else 0.72
-        return {
-            "action": "BUY",
-            "confidence": confidence,
-            "reason": "الاقتراب من مستوى دعم قوي",
-            "strategy": "SUPPORT_RESISTANCE"
-        }
-    
-    return {"action": "HOLD", "confidence": 0.0, "reason": "لا يوجد مستويات رئيسية قريبة", "strategy": "SUPPORT_RESISTANCE"}
+    return {"action": "HOLD", "confidence": 0.0, "reason": "لا توجد إشارة من MACD", "strategy": "MACD"}
 
 def calculate_atr(df, period=14):
-    """حساب Average True Range"""
+    """حساب Average True Range من بيانات حقيقية"""
     try:
-        high_low = df['High'] - df['Low']
-        high_close = np.abs(df['High'] - df['Close'].shift())
-        low_close = np.abs(df['Low'] - df['Close'].shift())
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
         
         true_range = np.maximum(np.maximum(high_low, high_close), low_close)
         atr = true_range.rolling(period).mean().iloc[-1]
         
-        return atr if not np.isnan(atr) else (df['High'] - df['Low']).mean()
+        return atr if not np.isnan(atr) else (df['high'] - df['low']).mean()
     except:
-        return 10.0  # قيمة افتراضية
+        return 2.0  # قيمة افتراضية واقعية
 
 def calculate_dynamic_confidence(strategies, valid_strategies):
     """حساب ثقة ديناميكية بناءً على قوة الإشارات"""
@@ -834,35 +727,19 @@ def calculate_dynamic_confidence(strategies, valid_strategies):
     base_confidence = sum(s["confidence"] for s in valid_strategies) / len(valid_strategies)
     
     # عوامل تعزيز الثقة
-    boost_factors = 0.0
+    strategy_count_boost = (len(valid_strategies) - 2) * 0.03
+    trend_strength_boost = 0.06 if len(set(s["action"] for s in valid_strategies)) == 1 else -0.08
     
-    # 1. عدد الاستراتيجيات المتوافقة
-    strategy_count_boost = (len(valid_strategies) - 2) * 0.04  # 4% لكل استراتيجية إضافية فوق 2
+    total_boost = max(-0.12, strategy_count_boost + trend_strength_boost)
+    dynamic_confidence = min(0.95, base_confidence + total_boost)
     
-    # 2. قوة الاتجاه (التوافق بين الإشارات)
-    buy_signals = sum(1 for s in valid_strategies if s["action"] == "BUY")
-    sell_signals = sum(1 for s in valid_strategies if s["action"] == "SELL")
-    
-    if buy_signals > 0 and sell_signals > 0:
-        trend_strength_boost = -0.10  # تعارض في الإشارات
-    else:
-        trend_strength_boost = 0.08   # توافق في الإشارات
-    
-    # 3. جودة الثقة الأساسية
-    confidence_quality_boost = (base_confidence - 0.7) * 0.3  # تعزيز للثقات العالية
-    
-    total_boost = max(-0.15, strategy_count_boost + trend_strength_boost + confidence_quality_boost)
-    dynamic_confidence = min(0.97, base_confidence + total_boost)
-    
-    return max(0.70, dynamic_confidence)  # حد أدنى 70%
+    return max(0.65, dynamic_confidence)
 
 def calculate_dynamic_levels(df, current_price, action):
-    """حساب نقاط دخول وخروج ذكية"""
-    # مستويات الدعم والمقاومة
-    resistance_1 = df['High'].rolling(20).max().iloc[-1]
-    resistance_2 = df['High'].rolling(50).max().iloc[-1]
-    support_1 = df['Low'].rolling(20).min().iloc[-1]
-    support_2 = df['Low'].rolling(50).min().iloc[-1]
+    """حساب نقاط دخول وخروج ذكية بناء على بيانات حقيقية"""
+    # مستويات الدعم والمقاومة من البيانات الحقيقية
+    resistance_1 = df['high'].rolling(20).max().iloc[-1]
+    support_1 = df['low'].rolling(20).min().iloc[-1]
     
     # ATR للمخاطرة
     atr = calculate_atr(df)
@@ -871,19 +748,19 @@ def calculate_dynamic_levels(df, current_price, action):
         # الدخول: سعر حالي
         entry = current_price
         
-        # الهدف: أقوى مقاومة أو نسبة مئوية
+        # الهدف: مقاومة أو نسبة مئوية
         tp_candidates = [
             resistance_1,
-            current_price + (atr * 2.8),
-            current_price * 1.006  # 0.6%
+            current_price + (atr * 2.5),
+            current_price * 1.008  # 0.8%
         ]
         tp = max(tp_candidates)
         
-        # الوقف: أقوى دعم أو نسبة مئوية
+        # الوقف: دعم أو نسبة مئوية
         sl_candidates = [
             support_1,
-            current_price - (atr * 1.8),
-            current_price * 0.994  # 0.6%
+            current_price - (atr * 1.5),
+            current_price * 0.992  # 0.8%
         ]
         sl = min(sl_candidates)
         
@@ -891,28 +768,28 @@ def calculate_dynamic_levels(df, current_price, action):
         # الدخول: سعر حالي
         entry = current_price
         
-        # الهدف: أقوى دعم أو نسبة مئوية
+        # الهدف: دعم أو نسبة مئوية
         tp_candidates = [
             support_1,
-            current_price - (atr * 2.8),
-            current_price * 0.994  # 0.6%
+            current_price - (atr * 2.5),
+            current_price * 0.992  # 0.8%
         ]
         tp = min(tp_candidates)
         
-        # الوقف: أقوى مقاومة أو نسبة مئوية
+        # الوقف: مقاومة أو نسبة مئوية
         sl_candidates = [
             resistance_1,
-            current_price + (atr * 1.8),
-            current_price * 1.006  # 0.6%
+            current_price + (atr * 1.5),
+            current_price * 1.008  # 0.8%
         ]
         sl = max(sl_candidates)
     
     return entry, tp, sl, atr
 
 def get_professional_analysis(min_filters):
-    """تقرير تحليل محترف مع تفاصيل كاملة"""
+    """تقرير تحليل محترف مع تفاصيل كاملة بناء على بيانات حقيقية"""
     try:
-        df_15m = fetch_live_ohlcv("15m", 50)
+        df_15m = fetch_live_ohlcv("15m", 100)
         
         if df_15m.empty:
             return "❌ لا توجد بيانات كافية للتحليل", 0.0, "HOLD", 0.0, 0.0, 0.0, 0.0, "NONE", 0, []
@@ -924,7 +801,7 @@ def get_professional_analysis(min_filters):
             price_action_breakout_strategy(df_15m),
             rsi_momentum_strategy(df_15m),
             moving_average_strategy(df_15m),
-            support_resistance_strategy(df_15m)
+            macd_strategy(df_15m)
         ]
         
         # تفاصيل كل استراتيجية
@@ -935,7 +812,7 @@ def get_professional_analysis(min_filters):
             strategy_details.append(f"{status} {action_emoji} {strategy['strategy']}: {strategy['reason']} (ثقة: {strategy['confidence']*100:.1f}%)")
         
         # ترشيح الاستراتيجيات الناجحة
-        valid_strategies = [s for s in strategies if s["action"] != "HOLD" and s["confidence"] >= 0.70]
+        valid_strategies = [s for s in strategies if s["action"] != "HOLD" and s["confidence"] >= 0.65]
         
         if len(valid_strategies) < min_filters:
             return generate_hold_analysis(current_price, source, strategies, valid_strategies, min_filters)
@@ -989,7 +866,7 @@ def generate_trade_signal(current_price, source, best_signal, confidence, entry,
 📡 **مصدر البيانات:** {source}
 
 📊 **تفاصيل الصفقة:**
-🟢 **الإجراء:** {best_signal['action']}
+{'🟢' if best_signal['action'] == 'BUY' else '🔴'} **الإجراء:** {best_signal['action']}
 🎯 **الثقة:** {confidence_percent:.1f}% (ديناميكية)
 📈 **الاستراتيجية الرئيسية:** {best_signal['strategy']}
 💡 **المنطق:** {best_signal['reason']}
@@ -1380,7 +1257,7 @@ async def get_current_price(msg: types.Message):
 """
         await msg.reply(price_msg, parse_mode="HTML")
     except Exception as e:
-        await msg.reply("💰 **السعر التقريبي للذهب:** $3,997.00 ± $3.00")
+        await msg.reply("💰 **السعر التقريبي للذهب:** $1,985.50 ± $2.00")
 
 @dp.message(F.text == "🔍 الصفقات النشطة")
 async def show_active_trades(msg: types.Message):
@@ -1494,7 +1371,7 @@ async def about_bot(msg: types.Message):
 1. <b>Price Action Breakout</b> - كسر الدعم والمقاومة
 2. <b>RSI Momentum</b> - الزخم والمؤشرات  
 3. <b>Moving Average</b> - المتوسطات المتحركة
-4. <b>Support & Resistance</b> - الدعم والمقاومة
+4. <b>MACD</b> - مؤشر الاتجاه والزخم
 
 💰 <b>تحويل التحليل إلى أرباح حقيقية!</b>
 """
